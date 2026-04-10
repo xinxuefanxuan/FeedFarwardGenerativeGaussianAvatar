@@ -1,0 +1,14 @@
+geometry:
+  flame:
+    asset_root: /home/yuanyuhao/VHAP/asset/flame
+    flame_model_path: /home/yuanyuhao/VHAP/asset/flame/flame2023.pkl
+    head_template_mesh_path: /home/yuanyuhao/VHAP/asset/flame/head_template_mesh.obj
+    masks_path: /home/yuanyuhao/VHAP/asset/flame/FLAME_masks.pkl
+    uv_masks_path: /home/yuanyuhao/VHAP/asset/flame/uv_masks.npz
+  backends:
+    gaussian_renderer: gsplat
+    rasterizer: nvdiffrast
+    rasterizer_fallback: pytorch3d
+  defaults:
+    uv_resolution: 256
+    transform_matrix_mode: unknown  # TODO: cam2world or world2cam needs explicit verification
