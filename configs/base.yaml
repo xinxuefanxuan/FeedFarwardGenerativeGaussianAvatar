@@ -8,12 +8,15 @@ run:
   experiment_name: debug_skeleton
 
 defaults:
-  data: data/default.yaml
+  data: data/nersemble_fastavatar.yaml
+  geometry: model/geometry.yaml
   model_stage1: model/stage1_prior.yaml
   model_stage2: model/stage2_gaussian.yaml
   train_stage1: train/stage1.yaml
   train_stage2: train/stage2.yaml
 
 paths:
-  data_root: data/
+  data_root: /home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full
+  raw_data_root: /home/yuanyuhao/FastAvatar/data/NeRSemble
+  flame_asset_root: /home/yuanyuhao/VHAP/asset/flame
   output_root: outputs/

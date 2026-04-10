@@ -1,18 +1,5 @@
-"""FLAME adapter and projection placeholders."""
+"""Backward-compatible alias to FlameWrapper."""
 
-from __future__ import annotations
+from models.geometry.flame_wrapper import FlameWrapper
 
-from typing import Dict
-
-import torch
-
-
-class FlameAdapter:
-    """Utility wrapper for FLAME parameters and mesh conversion.
-
-    TODO: confirm FLAME parameter names and coordinate conventions.
-    """
-
-    def build_coarse_mesh(self, flame_params: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Build a coarse mesh from FLAME tracking parameters."""
-        raise NotImplementedError
+__all__ = ["FlameWrapper"]

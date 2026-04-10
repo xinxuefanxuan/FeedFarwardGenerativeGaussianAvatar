@@ -1,27 +1,35 @@
-"""Base dataset abstractions."""
+"""Dataset abstractions for confirmed FastAvatar-style schema."""
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any, Dict
 
 from torch.utils.data import Dataset
 
 
-class BaseAvatarDataset(Dataset):
-    """Minimal dataset base class for avatar research.
+class BaseAvatarDataset(Dataset, ABC):
+    """Base dataset with explicit schema contract.
 
-    TODO: Confirm exact sample dictionary schema with real data protocol.
+    The primary supported schema is the processed FastAvatar-style layout.
     """
 
     def __init__(self, split: str = "train") -> None:
         self.split = split
 
+    @abstractmethod
     def __len__(self) -> int:
-        return 0
+        """Return number of frames/samples in this dataset."""
 
+    @abstractmethod
     def __getitem__(self, index: int) -> Dict[str, Any]:
-        """Return one sample.
+        """Return one parsed sample dictionary.
 
-        Expected keys are intentionally left unresolved until data contract is confirmed.
+        Required keys for current geometry/debug workflow:
+        - rgb
+        - mask
+        - intrinsics
+        - transform_matrix
+        - flame_params
+        - frame_meta
         """
-        raise NotImplementedError("TODO: implement sample parsing after data schema confirmation.")

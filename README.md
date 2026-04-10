@@ -2,43 +2,39 @@
 
 Geometry-Consistent Canonical Priors for Feedforward Generative Gaussian Avatars
 
-## 1. 项目目标（第一轮）
-本仓库当前版本是**研究骨架初始化版本**，目标是：
-- 提供可维护、可扩展的 PyTorch 项目结构。
-- 为后续两阶段方法实现（Stage 1 canonical prior / Stage 2 Gaussian avatar）打好接口。
-- 明确记录不确定数据字段与待确认事项，避免“伪实现”。
+## 当前阶段（第二轮）
+本轮聚焦于：**真实路径接入 + schema 适配 + 几何基础设施 + 可视化验证脚本**。
 
-> 当前**不实现完整模型**，仅提供最小可运行入口与模块签名。
+> 暂不实现完整 Stage 1 prior builder / Stage 2 Gaussian decoder 训练逻辑。
 
-## 2. 方法概述（研究计划）
-### 输入
-- 稀疏多视图或稀疏多帧人头图像
-- 相机参数
-- FLAME 跟踪输出
+## 已确认的真实路径（默认写入配置）
+- FLAME 资产根目录：`/home/yuanyuhao/VHAP/asset/flame`
+- FLAME 模型：`/home/yuanyuhao/VHAP/asset/flame/flame2023.pkl`
+- FLAME 模板网格：`/home/yuanyuhao/VHAP/asset/flame/head_template_mesh.obj`
+- FLAME masks：`/home/yuanyuhao/VHAP/asset/flame/FLAME_masks.pkl`
+- UV masks：`/home/yuanyuhao/VHAP/asset/flame/uv_masks.npz`
+- raw NeRSemble 根目录：`/home/yuanyuhao/FastAvatar/data/NeRSemble`
+- processed FastAvatar-style 根目录（第一优先）：
+  `/home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full`
+- 样例相机目录：
+  `/home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full/017/EXP-1-head_part-1/cam_220700191`
 
-### Stage 1: geometry-consistent canonical prior
-1. 图像编码器（默认预留 DINOv2 冻结接口）
-2. 图像特征投影到粗 FLAME mesh
-3. 映射到 canonical UV 空间
-4. 多视图 UV 融合
-5. UV refinement
-6. UV position/normal maps
-7. mesh refinement
+## 数据与后端策略
+- **Primary schema**：processed FastAvatar-style (`transforms.json` + `processed_data/*`)。
+- raw NeRSemble：当前仅提供 adapter 占位，不编造未确认字段。
+- Gaussian renderer backend：优先 `gsplat`。
+- Mesh projection/rasterization backend：优先 `nvdiffrast`，保留 `PyTorch3D` fallback 接口。
 
-### Stage 2: feedforward Gaussian avatar generation
-1. 从 UV / refined mesh 初始化 Gaussian anchors
-2. 解码 Gaussian 属性
-3. differentiable Gaussian rendering
+## 第一版协议（已落到配置）
+- DINOv2: `vitb14`
+- UV resolution: `256`
+- Stage1 / Stage2: 分开训练
+- Stage1 UV fusion: `confidence_weighted_average`
+- Stage2: surface Gaussian only
+- metrics: `PSNR / SSIM / LPIPS`
+- prompt-conditioned decoder: 接口保留，不启用
 
-## 3. 本轮明确不做
-- diffusion
-- VGGT / FastVGGT
-- hair
-- relighting
-- prompt-conditioned decoder（仅保留接口）
-- residual off-surface branch
-
-## 4. 目录结构
+## 目录结构
 ```text
 configs/
 data/
@@ -58,7 +54,19 @@ notebooks/
 docs/
 ```
 
-## 5. 环境安装
+## 关键配置文件
+- `configs/base.yaml`
+- `configs/data/nersemble_fastavatar.yaml`
+- `configs/model/geometry.yaml`
+- `configs/model/stage1_prior.yaml`
+- `configs/model/stage2_gaussian.yaml`
+
+如果你的本地路径与默认不同，优先修改：
+1. `configs/base.yaml` 中 `paths.*`
+2. `configs/data/nersemble_fastavatar.yaml` 中 `root/raw_root/subject_id/sequence_id/camera_id`
+3. `configs/model/geometry.yaml` 中 `geometry.flame.*`
+
+## 环境安装
 ### Conda（推荐）
 ```bash
 conda env create -f environment.yml
@@ -72,40 +80,33 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 6. 快速开始（骨架运行）
+## 第二轮验证命令（建议顺序）
+### 1) 可视化读取真实样本
 ```bash
-python scripts/train_stage1.py --config configs/base.yaml
-python scripts/train_stage2.py --config configs/base.yaml
-python scripts/prepare_dataset.py --config configs/base.yaml
-python scripts/evaluate.py --config configs/base.yaml
+python scripts/visualize_sample.py \
+  --camera-dir /home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full/017/EXP-1-head_part-1/cam_220700191 \
+  --index 0 \
+  --out outputs/visualize/sample_rgb.png
 ```
 
-这些脚本当前只做配置加载与模块连通性验证，用于后续增量研发。
+### 2) FLAME mesh 投影并保存 overlay + UV 占位结果
+```bash
+python scripts/debug_mesh_overlay.py \
+  --camera-dir /home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full/017/EXP-1-head_part-1/cam_220700191 \
+  --index 0 \
+  --flame-model /home/yuanyuhao/VHAP/asset/flame/flame2023.pkl \
+  --flame-template /home/yuanyuhao/VHAP/asset/flame/head_template_mesh.obj \
+  --flame-masks /home/yuanyuhao/VHAP/asset/flame/FLAME_masks.pkl \
+  --uv-masks /home/yuanyuhao/VHAP/asset/flame/uv_masks.npz \
+  --uv-resolution 256 \
+  --transform-mode unknown \
+  --out-overlay outputs/debug/mesh_overlay.png \
+  --out-uv-mask outputs/debug/uv_valid_mask.npy \
+  --out-uv-pos outputs/debug/uv_position_map.npy \
+  --out-uv-nrm outputs/debug/uv_normal_map.npy
+```
 
-## 7. 配置系统说明
-- `configs/base.yaml`：公共默认项与 stage 选择。
-- `configs/data/*.yaml`：数据源类型/路径/字段占位。
-- `configs/model/*.yaml`：Stage 1/2 模块开关与基础超参。
-- `configs/train/*.yaml`：训练策略与优化器占位。
-
-## 8. 待确认事项
-请优先查看：
-- `docs/assumptions.md`
-
-其中列出了所有未确认字段、命名与协议；代码中的 `TODO` 与该文档一一对应。
-
-## 9. 当前状态总结
-### 已实现（骨架）
-- 标准目录结构
-- 环境配置文件
-- 配置 YAML 模板
-- 最小可运行脚本入口
-- Stage 1 / Stage 2 关键模块类签名
-- 假设与风险文档
-
-### 尚未实现（占位）
-- 具体网络结构与训练逻辑
-- 几何投影、UV 融合、mesh refinement 细节
-- Gaussian renderer 的真实可微实现
-- 数据集真实解析与字段映射
-
+## 说明
+- 当前 overlay 的 mesh 来自 head template + FLAME translation（稳态调试优先）。
+- 完整 FLAME 形变与可微 rasterization 内核接入放在后续轮次。
+- `transform_matrix` 的 cam2world / world2cam 仍需你用可视化结果最终确认（见 `docs/assumptions.md`）。

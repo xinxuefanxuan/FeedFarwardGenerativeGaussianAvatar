@@ -3,12 +3,14 @@ model:
     encoder:
       name: dinov2
       freeze: true
-      variant: vitb14  # TODO: 待确认具体变体
+      variant: vitb14
     geometry_projection:
       enabled: true
+      backend: nvdiffrast
+      fallback: pytorch3d
     uv:
-      resolution: 512  # TODO: 待确认
-      fusion: average  # TODO: 待确认融合策略
+      resolution: 256
+      fusion: confidence_weighted_average
       refinement: true
     outputs:
       uv_position_map: true

@@ -1,13 +1,19 @@
 model:
   stage2_gaussian:
+    train_separately_from_stage1: true
     anchor_init:
-      source: uv_or_mesh  # TODO: 待确认优先级
+      source: refined_mesh_or_uv
+      type: surface_gaussian_only
       num_anchors: 20000
     decoder:
       hidden_dim: 256
-      prompt_conditioned: false  # 第一版仅保留接口
+      prompt_conditioned: false
     renderer:
-      backend: TODO_renderer_backend
+      backend: gsplat
+    metrics:
+      - psnr
+      - ssim
+      - lpips
     disabled_features:
       diffusion: true
       vggt_family: true

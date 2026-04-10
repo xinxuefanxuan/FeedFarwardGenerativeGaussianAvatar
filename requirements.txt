@@ -8,3 +8,9 @@ pillow>=10.0
 einops>=0.7
 scipy>=1.11
 matplotlib>=3.8
+scikit-image>=0.22
+lpips>=0.1.4
+# Optional backends (install per CUDA/toolchain compatibility):
+# gsplat
+# nvdiffrast
+# pytorch3d
