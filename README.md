@@ -1,0 +1,2 @@
+# FeedFarwardGenerativeGaussianAvatar
+Geometry-Consistent Canonical Priors for Feedforward Generative Gaussian Avatars
