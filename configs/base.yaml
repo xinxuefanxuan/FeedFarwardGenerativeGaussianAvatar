@@ -1,0 +1,19 @@
+project:
+  name: FeedFarwardGenerativeGaussianAvatar
+  seed: 42
+  device: cuda
+
+run:
+  stage: stage1  # stage1 | stage2
+  experiment_name: debug_skeleton
+
+defaults:
+  data: data/default.yaml
+  model_stage1: model/stage1_prior.yaml
+  model_stage2: model/stage2_gaussian.yaml
+  train_stage1: train/stage1.yaml
+  train_stage2: train/stage2.yaml
+
+paths:
+  data_root: data/
+  output_root: outputs/

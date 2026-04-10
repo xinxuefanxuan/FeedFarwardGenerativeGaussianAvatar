@@ -1,0 +1,16 @@
+model:
+  stage2_gaussian:
+    anchor_init:
+      source: uv_or_mesh  # TODO: 待确认优先级
+      num_anchors: 20000
+    decoder:
+      hidden_dim: 256
+      prompt_conditioned: false  # 第一版仅保留接口
+    renderer:
+      backend: TODO_renderer_backend
+    disabled_features:
+      diffusion: true
+      vggt_family: true
+      hair: true
+      relighting: true
+      residual_off_surface: true
