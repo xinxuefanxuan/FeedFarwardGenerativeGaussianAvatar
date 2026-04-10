@@ -1,0 +1,16 @@
+model:
+  stage1_prior:
+    encoder:
+      name: dinov2
+      freeze: true
+      variant: vitb14  # TODO: 待确认具体变体
+    geometry_projection:
+      enabled: true
+    uv:
+      resolution: 512  # TODO: 待确认
+      fusion: average  # TODO: 待确认融合策略
+      refinement: true
+    outputs:
+      uv_position_map: true
+      uv_normal_map: true
+      refined_mesh: true
