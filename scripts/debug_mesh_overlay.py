@@ -7,52 +7,113 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
+
 from datasets.nersemble_dataset import NersembleFastAvatarDataset
 from models.geometry.flame_wrapper import FlameWrapper
 from models.geometry.mesh_ops import mesh_vertex_normals
 from models.geometry.uv_ops import build_geometry_maps_placeholder, build_uv_valid_mask
 from models.geometry.visibility import points_in_image_mask
 
-def _to_hwc_uint8(img: np.ndarray) -> np.ndarray:
-    import numpy as np
 
-    img = np.asarray(img)
+def _to_hwc_uint8(rgb: np.ndarray) -> np.ndarray:
+    arr = np.asarray(rgb)
+    arr = np.squeeze(arr)
+    if arr.ndim == 3 and arr.shape[0] in (1, 3) and arr.shape[-1] not in (1, 3):
+        arr = np.transpose(arr, (1, 2, 0))
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    if np.issubdtype(arr.dtype, np.floating) and (float(np.max(arr)) if arr.size else 0.0) <= 1.0:
+        arr = arr * 255.0
+    return np.clip(arr, 0, 255).astype(np.uint8)
 
-    # 去掉 batch 维
-    if img.ndim == 4 and img.shape[0] == 1:
-        img = img[0]
 
-    # CHW -> HWC
-    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
-        img = np.transpose(img, (1, 2, 0))
+def _stats(name: str, arr: np.ndarray) -> str:
+    arr = np.asarray(arr)
+    arr_min = np.min(arr, axis=0)
+    arr_max = np.max(arr, axis=0)
+    arr_range = arr_max - arr_min
+    return f"{name}: min={arr_min}, max={arr_max}, range={arr_range}"
 
-    # 单通道 squeeze
-    if img.ndim == 3 and img.shape[-1] == 1:
-        img = img[..., 0]
 
-    # float -> uint8
-    if img.dtype != np.uint8:
-        img = img.astype(np.float32)
-        if img.max() <= 1.0:
-            img = (img * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            img = img.clip(0, 255).astype(np.uint8)
+def _camera_transform(vertices_world: np.ndarray, transform_matrix: np.ndarray, mode: str) -> np.ndarray:
+    verts_h = np.concatenate([vertices_world, np.ones((vertices_world.shape[0], 1), dtype=vertices_world.dtype)], axis=1)
+    if mode == "none":
+        cam = verts_h[:, :3]
+    elif mode == "world2cam":
+        cam = (transform_matrix @ verts_h.T).T[:, :3]
+    elif mode == "cam2world":
+        world2cam = np.linalg.inv(transform_matrix)
+        cam = (world2cam @ verts_h.T).T[:, :3]
+    else:
+        raise ValueError(f"Unsupported projection mode: {mode}")
+    return cam
 
-    return img
 
-def _draw_points(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
-    canvas = _to_hwc_uint8(rgb).copy()
+def _project_from_camera(vertices_cam: np.ndarray, intrinsics: np.ndarray) -> np.ndarray:
+    z = np.clip(vertices_cam[:, 2:3], 1e-6, None)
+    x = vertices_cam[:, 0:1] / z
+    y = vertices_cam[:, 1:2] / z
+    uv_h = (intrinsics @ np.concatenate([x, y, np.ones_like(x)], axis=1).T).T
+    return uv_h[:, :2]
 
+
+def _run_projection_chain(
+    name: str,
+    vertices_world: np.ndarray,
+    intrinsics: np.ndarray,
+    transform_matrix: np.ndarray,
+    image_hw: Tuple[int, int],
+    debug: bool,
+) -> Dict[str, np.ndarray | int]:
+    vertices_cam = _camera_transform(vertices_world, transform_matrix, mode=name)
+    points_uv = _project_from_camera(vertices_cam, intrinsics)
+    vis = points_in_image_mask(points_uv, image_hw=image_hw)
+
+    if debug:
+        print(f"\n[debug-projection] chain={name}")
+        print(_stats("vertices_cam", vertices_cam))
+        z = vertices_cam[:, 2]
+        print(f"z>0: {int((z > 0).sum())} / {z.shape[0]}")
+        print(f"z<0: {int((z < 0).sum())} / {z.shape[0]}")
+        print(_stats("projected_xy", points_uv))
+        print(f"inside_image: {int(vis.sum())} / {vis.shape[0]}")
+
+    return {
+        "points_uv": points_uv,
+        "visible": int(vis.sum()),
+        "vis_mask": vis,
+    }
+
+
+def _draw_overlay(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    canvas = _to_hwc_uint8(rgb)
+
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise ImportError("Pillow is required to save debug images") from exc
+
+    img = Image.fromarray(canvas)
+    draw = ImageDraw.Draw(img)
+
+    # Draw wireframe edges for visible triangles.
+    for tri in faces:
+        i0, i1, i2 = int(tri[0]), int(tri[1]), int(tri[2])
+        if not (valid_mask[i0] and valid_mask[i1] and valid_mask[i2]):
+            continue
+        p0 = tuple(points_uv[i0].tolist())
+        p1 = tuple(points_uv[i1].tolist())
+        p2 = tuple(points_uv[i2].tolist())
+        draw.line([p0, p1], fill=(0, 255, 0), width=1)
+        draw.line([p1, p2], fill=(0, 255, 0), width=1)
+        draw.line([p2, p0], fill=(0, 255, 0), width=1)
+
+    # Draw projected vertices scatter.
     for (u, v), is_valid in zip(points_uv, valid_mask):
         if not is_valid:
             continue
-        x = int(round(u))
-        y = int(round(v))
-        if 0 <= y < canvas.shape[0] and 0 <= x < canvas.shape[1]:
-            canvas[y, x] = np.array([255, 0, 0], dtype=np.uint8)
-
-    return canvas
-
+        r = 1
+        draw.ellipse((u - r, v - r, u + r, v + r), fill=(255, 0, 0))
 
     return np.asarray(img, dtype=np.uint8)
 
@@ -111,18 +172,32 @@ def main() -> None:
     vertices, faces = flame.build_mesh_from_flame_params(sample["flame_params"])
     _ = mesh_vertex_normals(vertices, faces)
 
-    rgb_hwc = _to_hwc_uint8(sample["rgb"])
+    if args.debug_projection:
+        print("[debug-projection]", _stats("vertices_world", vertices))
+        translation = sample["flame_params"].get("translation")
+        if translation is not None:
+            translation = np.asarray(translation).reshape(-1)
+            print(f"[debug-projection] flame translation: {translation[:3]}")
+        else:
+            print("[debug-projection] flame translation: None")
 
-    points_uv = project_mesh_vertices(
-        vertices_world=vertices,
-        intrinsics=sample["intrinsics"],
-        transform_matrix=sample["transform_matrix"],
-        transform_mode=args.transform_mode,
-    )
+    image_hw = _to_hwc_uint8(sample["rgb"]).shape[:2]
+    chain_results: Dict[str, Dict[str, np.ndarray | int]] = {}
+    for chain in ("none", "world2cam", "cam2world"):
+        chain_results[chain] = _run_projection_chain(
+            name=chain,
+            vertices_world=vertices,
+            intrinsics=sample["intrinsics"],
+            transform_matrix=sample["transform_matrix"],
+            image_hw=image_hw,
+            debug=args.debug_projection,
+        )
 
-    vis = points_in_image_mask(points_uv, image_hw=rgb_hwc.shape[:2])
+    for chain in ("none", "world2cam", "cam2world"):
+        print(f"Visible projected vertices ({chain}): {chain_results[chain]['visible']} / {vertices.shape[0]}")
 
-    overlay = _draw_points(rgb_hwc, points_uv, vis)
+    selected = chain_results[args.transform_mode]
+    overlay = _draw_overlay(sample["rgb"], selected["points_uv"], selected["vis_mask"], faces)
     _save_image(overlay, Path(args.out_overlay))
 
     uv_valid = build_uv_valid_mask(uv_resolution=args.uv_resolution)
