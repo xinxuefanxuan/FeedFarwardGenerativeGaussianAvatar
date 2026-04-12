@@ -1,0 +1,19 @@
+data:
+  dataset_name: nersemble_fastavatar_processed
+  schema: fastavatar_processed_primary
+  root: /home/yuanyuhao/FastAvatar/data/nersemble_fastavatar_unified_full
+  raw_root: /home/yuanyuhao/FastAvatar/data/NeRSemble
+  subject_id: "017"
+  sequence_id: "EXP-1-head_part-1"
+  camera_id: "cam_220700191"
+  transforms_filename: transforms.json
+  use_processed_data: true
+  processed_data_dirname: processed_data
+  image_subdir_key: file_path
+  mask_subdir_key: fg_mask_path
+  flame_subdir_key: flame_param_path
+  prefer_rgb_npy: true
+  split:
+    train: train
+    val: val
+    test: test
