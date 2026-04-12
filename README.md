@@ -89,6 +89,8 @@ python scripts/visualize_sample.py \
   --out outputs/visualize/sample_rgb.png
 ```
 
+> 如果 `PIL.Image.fromarray()` 保存失败，请优先检查 `rgb` 是否为 CHW（如 `(3,H,W)`）并确认已转换为 HWC。
+
 ### 2) FLAME mesh 投影并保存 overlay + UV 占位结果
 ```bash
 python scripts/debug_mesh_overlay.py \
