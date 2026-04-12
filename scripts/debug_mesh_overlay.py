@@ -6,7 +6,6 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-
 from datasets.nersemble_dataset import NersembleFastAvatarDataset
 from models.geometry.flame_wrapper import FlameWrapper
 from models.geometry.mesh_ops import mesh_vertex_normals
@@ -14,9 +13,36 @@ from models.geometry.projection import project_mesh_vertices
 from models.geometry.uv_ops import build_geometry_maps_placeholder, build_uv_valid_mask
 from models.geometry.visibility import points_in_image_mask
 
+def _to_hwc_uint8(img: np.ndarray) -> np.ndarray:
+    import numpy as np
+
+    img = np.asarray(img)
+
+    # 去掉 batch 维
+    if img.ndim == 4 and img.shape[0] == 1:
+        img = img[0]
+
+    # CHW -> HWC
+    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
+        img = np.transpose(img, (1, 2, 0))
+
+    # 单通道 squeeze
+    if img.ndim == 3 and img.shape[-1] == 1:
+        img = img[..., 0]
+
+    # float -> uint8
+    if img.dtype != np.uint8:
+        img = img.astype(np.float32)
+        if img.max() <= 1.0:
+            img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            img = img.clip(0, 255).astype(np.uint8)
+
+    return img
 
 def _draw_points(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
-    canvas = np.clip(rgb, 0, 255).astype(np.uint8).copy()
+    canvas = _to_hwc_uint8(rgb).copy()
+
     for (u, v), is_valid in zip(points_uv, valid_mask):
         if not is_valid:
             continue
@@ -24,6 +50,7 @@ def _draw_points(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray)
         y = int(round(v))
         if 0 <= y < canvas.shape[0] and 0 <= x < canvas.shape[1]:
             canvas[y, x] = np.array([255, 0, 0], dtype=np.uint8)
+
     return canvas
 
 
@@ -108,15 +135,18 @@ def main() -> None:
     vertices, faces = flame.build_mesh_from_flame_params(sample["flame_params"])
     _ = mesh_vertex_normals(vertices, faces)
 
+    rgb_hwc = _to_hwc_uint8(sample["rgb"])
+
     points_uv = project_mesh_vertices(
         vertices_world=vertices,
         intrinsics=sample["intrinsics"],
         transform_matrix=sample["transform_matrix"],
         transform_mode=args.transform_mode,
     )
-    vis = points_in_image_mask(points_uv, image_hw=sample["rgb"].shape[:2])
 
-    overlay = _draw_points(sample["rgb"], points_uv, vis)
+    vis = points_in_image_mask(points_uv, image_hw=rgb_hwc.shape[:2])
+
+    overlay = _draw_points(rgb_hwc, points_uv, vis)
     _save_image(overlay, Path(args.out_overlay))
 
     uv_valid = build_uv_valid_mask(uv_resolution=args.uv_resolution)
