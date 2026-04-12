@@ -63,7 +63,8 @@ class NersembleFastAvatarDataset(BaseAvatarDataset):
         except ImportError as exc:
             raise ImportError("Pillow is required for image fallback loading") from exc
 
-        img_path = self.camera_dir / str(img_rel)
+        # img_path = self.camera_dir / str(img_rel)
+        img_path = self._frame_processed_dir(frame) / str(img_rel)
         with Image.open(img_path) as img:
             return np.asarray(img.convert("RGB"), dtype=np.float32)
 

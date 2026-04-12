@@ -27,12 +27,45 @@ def _draw_points(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray)
     return canvas
 
 
-def _save_image(img: np.ndarray, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _save_image(img, path):
+    import numpy as np
+    from pathlib import Path
+    from PIL import Image
+
     try:
-        from PIL import Image
-    except ImportError as exc:
-        raise ImportError("Pillow is required to save debug images") from exc
+        import torch
+        if torch.is_tensor(img):
+            img = img.detach().cpu().numpy()
+    except Exception:
+        pass
+
+    img = np.asarray(img)
+    print("[DEBUG overlay] before save:", img.shape, img.dtype, img.min(), img.max())
+
+    # 去掉 batch 维
+    if img.ndim == 4 and img.shape[0] == 1:
+        img = img[0]
+
+    # CHW -> HWC
+    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
+        img = np.transpose(img, (1, 2, 0))
+
+    # 单通道 squeeze
+    if img.ndim == 3 and img.shape[-1] == 1:
+        img = img[..., 0]
+
+    # float -> uint8
+    if img.dtype != np.uint8:
+        img = img.astype(np.float32)
+        if img.max() <= 1.0:
+            img = (img * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            img = img.clip(0, 255).astype(np.uint8)
+
+    print("[DEBUG overlay] after prep:", img.shape, img.dtype, img.min(), img.max())
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(img).save(path)
 
 
