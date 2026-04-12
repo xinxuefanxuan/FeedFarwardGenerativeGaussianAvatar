@@ -68,19 +68,33 @@ def _apply_basis(basis_v3n: np.ndarray, coeff: np.ndarray) -> np.ndarray:
     return np.tensordot(basis_v3n, c, axes=([2], [0]))
 
 
-class FlameWrapper:
-    """Thin wrapper around FLAME assets for geometry debugging.
+def _to_dense_matrix(m: object) -> np.ndarray:
+    """Convert sparse/dense matrix-like object to dense float32 ndarray."""
+    if hasattr(m, "toarray"):
+        return np.asarray(m.toarray(), dtype=np.float32)
+    return np.asarray(m, dtype=np.float32)
 
-    Phase 1 support in `build_mesh_from_flame_params`:
+
+def _make_transform(rot: np.ndarray, trans: np.ndarray) -> np.ndarray:
+    t = np.eye(4, dtype=np.float32)
+    t[:3, :3] = rot
+    t[:3, 3] = trans
+    return t
+
+
+class FlameWrapper:
+    """FLAME wrapper for geometry debugging.
+
+    Phase 2 support in `build_mesh_from_flame_params`:
     - fixed canonical y recenter
     - identity shape deformation (`shape`)
     - expression deformation (`expr`)
+    - local joints: neck/jaw/eyes (basic LBS)
     - global rotation (`rotation`)
     - global translation (`translation`)
 
     Not supported in this phase:
-    - neck_pose, jaw_pose, eyes_pose
-    - full LBS / pose corrective
+    - posedirs / pose-corrective terms
     """
 
     def __init__(
@@ -97,7 +111,7 @@ class FlameWrapper:
         self.uv_masks_path = Path(uv_masks_path)
         self.recenter_head_y = recenter_head_y
 
-        template_vertices_obj, template_faces_obj = _load_obj_vertices_faces(self.head_template_mesh_path)
+        _, template_faces_obj = _load_obj_vertices_faces(self.head_template_mesh_path)
 
         with open(self.flame_model_path, "rb") as f:
             flame_data = pickle.load(f, encoding="latin1")
@@ -119,12 +133,10 @@ class FlameWrapper:
         else:
             self.template_faces = template_faces_obj
 
-        # shapedirs can contain both identity and expression components.
         if "shapedirs" not in flame_data:
             raise KeyError("FLAME pickle missing required key `shapedirs`")
         shapedirs = _to_v3n(np.asarray(flame_data["shapedirs"]), num_vertices=self.num_vertices)
 
-        # Confirmed input protocol currently uses 300 shape + 100 expr coefficients.
         self.shape_dim = 300
         self.expr_dim = 100
         total_dim = int(shapedirs.shape[2])
@@ -133,7 +145,7 @@ class FlameWrapper:
                 f"shapedirs basis dim {total_dim} is smaller than required {self.shape_dim + self.expr_dim}"
             )
 
-        # Assumption (explicit): first 300 = identity shape, next 100 = expression.
+        # Phase 1/2 assumption: first 300 identity, next 100 expression.
         self.shape_basis = shapedirs[:, :, : self.shape_dim]
         self.expr_basis = shapedirs[:, :, self.shape_dim : self.shape_dim + self.expr_dim]
 
@@ -155,6 +167,46 @@ class FlameWrapper:
                 "[FlameWrapper] Assumption: expression basis uses shapedirs[:, :, 300:400]. "
                 "(No `exprdirs` key found in FLAME pickle.)"
             )
+
+        # Phase 2: minimal joint chain fields for basic LBS.
+        if "J_regressor" not in flame_data or "weights" not in flame_data or "kintree_table" not in flame_data:
+            raise KeyError("FLAME pickle must contain `J_regressor`, `weights`, and `kintree_table` for Phase 2")
+
+        self.j_regressor = _to_dense_matrix(flame_data["J_regressor"])
+        self.weights = np.asarray(flame_data["weights"], dtype=np.float32)
+        self.kintree_table = np.asarray(flame_data["kintree_table"], dtype=np.int64)
+
+        if self.j_regressor.shape[1] != self.num_vertices:
+            raise ValueError(
+                f"J_regressor shape mismatch: {self.j_regressor.shape}, expected (*,{self.num_vertices})"
+            )
+        self.num_joints = int(self.j_regressor.shape[0])
+
+        if self.weights.shape[0] != self.num_vertices or self.weights.shape[1] < self.num_joints:
+            raise ValueError(
+                f"weights shape mismatch: {self.weights.shape}, expected ({self.num_vertices}, >= {self.num_joints})"
+            )
+        self.weights = self.weights[:, : self.num_joints]
+
+        if self.kintree_table.ndim == 2 and self.kintree_table.shape[0] == 2:
+            self.parents = self.kintree_table[0].copy()
+        elif self.kintree_table.ndim == 1 and self.kintree_table.shape[0] == self.num_joints:
+            self.parents = self.kintree_table.copy()
+        else:
+            raise ValueError(f"Unsupported kintree_table shape: {self.kintree_table.shape}")
+
+        self.parents = self.parents.astype(np.int64)
+        self.parents[0] = -1
+
+        # Explicit, debuggable joint mapping assumption for FLAME-like topology.
+        # Supported local joints in Phase 2: neck, jaw, left_eye, right_eye.
+        self.joint_ids = {
+            "neck": 1,
+            "jaw": 2,
+            "left_eye": 3,
+            "right_eye": 4,
+        }
+        print(f"[FlameWrapper] Phase-2 joint mapping assumption: {self.joint_ids}")
 
         # Fixed canonical center; do NOT use per-frame dynamic mean.
         self.template_head_y_mean = float(self.template_vertices[:, 1].mean())
@@ -179,19 +231,82 @@ class FlameWrapper:
             raise ValueError(f"`{key}` dim mismatch: got {coeff.shape[0]}, expected {expected_dim}")
         return coeff
 
+    def _prepare_local_rotations(self, flame_params: Dict[str, np.ndarray]) -> np.ndarray:
+        """Build per-joint local rotation matrices for basic LBS.
+
+        Supported joints in this phase:
+        - neck: `neck_pose` (1,3)
+        - jaw: `jaw_pose` (1,3)
+        - eyes: `eyes_pose` (1,6) -> left/right 3D axis-angle
+
+        Unused in this phase:
+        - posedirs / pose-corrective terms
+        """
+        local_rots = np.tile(np.eye(3, dtype=np.float32)[None, :, :], (self.num_joints, 1, 1))
+
+        if "neck_pose" in flame_params:
+            neck_pose = np.asarray(flame_params["neck_pose"], dtype=np.float32).reshape(-1)
+            if neck_pose.size >= 3 and self.joint_ids["neck"] < self.num_joints:
+                local_rots[self.joint_ids["neck"]] = _axis_angle_to_rotation_matrix(neck_pose[:3])
+
+        if "jaw_pose" in flame_params:
+            jaw_pose = np.asarray(flame_params["jaw_pose"], dtype=np.float32).reshape(-1)
+            if jaw_pose.size >= 3 and self.joint_ids["jaw"] < self.num_joints:
+                local_rots[self.joint_ids["jaw"]] = _axis_angle_to_rotation_matrix(jaw_pose[:3])
+
+        if "eyes_pose" in flame_params:
+            eyes_pose = np.asarray(flame_params["eyes_pose"], dtype=np.float32).reshape(-1)
+            if eyes_pose.size >= 6:
+                if self.joint_ids["left_eye"] < self.num_joints:
+                    local_rots[self.joint_ids["left_eye"]] = _axis_angle_to_rotation_matrix(eyes_pose[:3])
+                if self.joint_ids["right_eye"] < self.num_joints:
+                    local_rots[self.joint_ids["right_eye"]] = _axis_angle_to_rotation_matrix(eyes_pose[3:6])
+
+        return local_rots
+
+    def _compute_joints(self, vertices: np.ndarray) -> np.ndarray:
+        """Compute joints from vertices using J_regressor."""
+        # J_regressor: (J, V), vertices: (V, 3) -> joints: (J, 3)
+        return self.j_regressor @ vertices
+
+    def _basic_lbs(self, vertices: np.ndarray, local_rots: np.ndarray) -> np.ndarray:
+        """Apply basic LBS without posedirs / pose-corrective."""
+        joints = self._compute_joints(vertices)
+
+        transforms = np.tile(np.eye(4, dtype=np.float32)[None, :, :], (self.num_joints, 1, 1))
+
+        for j in range(self.num_joints):
+            parent = int(self.parents[j])
+            if parent < 0:
+                transforms[j] = _make_transform(local_rots[j], joints[j])
+            else:
+                rel_t = joints[j] - joints[parent]
+                transforms[j] = transforms[parent] @ _make_transform(local_rots[j], rel_t)
+
+        # Remove rest joint offsets: G_j = T_j * [I, -J_j]
+        rest = np.tile(np.eye(4, dtype=np.float32)[None, :, :], (self.num_joints, 1, 1))
+        rest[:, :3, 3] = -joints
+        transforms = np.matmul(transforms, rest)
+
+        # Blend transforms per vertex.
+        blended = np.einsum("vj,jab->vab", self.weights, transforms)
+        verts_h = np.concatenate([vertices, np.ones((vertices.shape[0], 1), dtype=np.float32)], axis=1)
+        posed_h = np.einsum("vab,vb->va", blended, verts_h)
+        return posed_h[:, :3]
+
     def build_mesh_from_flame_params(self, flame_params: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
-        """Return Phase-1 FLAME mesh for visualization.
+        """Return Phase-2 FLAME mesh for visualization.
 
         Supported in this phase:
         1) fixed canonical y recenter
         2) identity shape deformation (300)
         3) expression deformation (100)
-        4) global rotation
-        5) global translation
+        4) local joints neck/jaw/eyes with basic LBS
+        5) global rotation
+        6) global translation
 
         Explicitly unsupported in this phase:
-        - neck_pose / jaw_pose / eyes_pose
-        - full LBS and pose corrective terms
+        - posedirs / pose-corrective terms
         """
         vertices = self.v_template.copy()
 
@@ -207,13 +322,17 @@ class FlameWrapper:
         expr_coeff = self._prepare_coeff(flame_params, "expr", self.expr_dim)
         vertices = vertices + _apply_basis(self.expr_basis, expr_coeff)
 
-        # 4) global rotation (axis-angle / Rodrigues)
+        # 4) local joints + basic LBS (no posedirs)
+        local_rots = self._prepare_local_rotations(flame_params)
+        vertices = self._basic_lbs(vertices, local_rots)
+
+        # 5) global rotation (axis-angle / Rodrigues)
         rotation = flame_params.get("rotation")
         if rotation is not None:
             rot_mat = _axis_angle_to_rotation_matrix(rotation)
             vertices = (rot_mat @ vertices.T).T
 
-        # 5) global translation
+        # 6) global translation
         translation = flame_params.get("translation")
         if translation is not None:
             translation = np.asarray(translation, dtype=np.float32).reshape(-1)
