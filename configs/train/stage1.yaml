@@ -1,0 +1,10 @@
+train:
+  stage1:
+    max_epochs: 10
+    lr: 1.0e-4
+    weight_decay: 1.0e-4
+    log_every_n_steps: 10
+    losses:
+      # TODO: 待确认损失组合与权重。
+      photometric: 1.0
+      geometry: 0.0
