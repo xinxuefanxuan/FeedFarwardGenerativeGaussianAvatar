@@ -10,55 +10,71 @@ import numpy as np
 from datasets.nersemble_dataset import NersembleFastAvatarDataset
 
 
-# def _save_rgb(rgb: np.ndarray, out_path: Path) -> None:
-#     out_path.parent.mkdir(parents=True, exist_ok=True)
-#     rgb_u8 = np.clip(rgb, 0, 255).astype(np.uint8)
-#     try:
-#         from PIL import Image
-#     except ImportError as exc:
-#         raise ImportError("Pillow is required to save visualization images") from exc
+def _to_numpy(x: object) -> np.ndarray:
+    """Convert numpy/torch-like input to numpy array without changing values."""
+    if isinstance(x, np.ndarray):
+        return x
 
-#     Image.fromarray(rgb_u8).save(out_path)
-def _save_rgb(rgb, out_path):
-    import numpy as np
-    from pathlib import Path
-    from PIL import Image
+    # Torch-like tensor support without hard dependency on torch import.
+    if hasattr(x, "detach") and hasattr(x, "cpu") and hasattr(x, "numpy"):
+        return x.detach().cpu().numpy()
+
+    return np.asarray(x)
+
+
+def _normalize_rgb_layout(rgb: np.ndarray) -> np.ndarray:
+    """Normalize RGB layout to HWC/HW for PIL saving."""
+    arr = np.squeeze(rgb)
+
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]
+
+    if arr.ndim == 3:
+        # CHW -> HWC
+        if arr.shape[0] in (1, 3) and arr.shape[-1] not in (1, 3):
+            arr = np.transpose(arr, (1, 2, 0))
+        # single channel HWC -> HW
+        if arr.shape[-1] == 1:
+            arr = arr[..., 0]
+
+    if arr.ndim not in (2, 3):
+        raise ValueError(f"Unsupported rgb shape after normalization: {arr.shape}")
+
+    if arr.ndim == 3 and arr.shape[-1] not in (3, 4):
+        raise ValueError(f"Expected last channel in (3,4), got shape {arr.shape}")
+
+    return arr
+
+
+def _to_uint8(arr: np.ndarray) -> np.ndarray:
+    """Convert image-like array to uint8."""
+    if np.issubdtype(arr.dtype, np.floating):
+        max_val = float(np.max(arr)) if arr.size > 0 else 0.0
+        if max_val <= 1.0:
+            arr = arr * 255.0
+    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return arr
+
+
+def _save_rgb(rgb: object, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    arr = _to_numpy(rgb)
+    arr = _normalize_rgb_layout(arr)
+    arr = _to_uint8(arr)
+
+    print(
+        f"[visualize_sample] saving rgb shape={arr.shape}, dtype={arr.dtype}, "
+        f"min={arr.min() if arr.size else 'NA'}, max={arr.max() if arr.size else 'NA'}"
+    )
 
     try:
-        import torch
-        if torch.is_tensor(rgb):
-            rgb = rgb.detach().cpu().numpy()
-    except Exception:
-        pass
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError("Pillow is required to save visualization images") from exc
 
-    rgb = np.asarray(rgb)
-    print("[DEBUG] before save:", rgb.shape, rgb.dtype, rgb.min(), rgb.max())
+    Image.fromarray(arr).save(out_path)
 
-    # 去掉 batch 维
-    if rgb.ndim == 4 and rgb.shape[0] == 1:
-        rgb = rgb[0]
-
-    # CHW -> HWC
-    if rgb.ndim == 3 and rgb.shape[0] in (1, 3, 4) and rgb.shape[-1] not in (1, 3, 4):
-        rgb = np.transpose(rgb, (1, 2, 0))
-
-    # 单通道 squeeze
-    if rgb.ndim == 3 and rgb.shape[-1] == 1:
-        rgb = rgb[..., 0]
-
-    # float -> uint8
-    if rgb.dtype != np.uint8:
-        rgb = rgb.astype(np.float32)
-        if rgb.max() <= 1.0:
-            rgb = (rgb * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            rgb = rgb.clip(0, 255).astype(np.uint8)
-
-    print("[DEBUG] after prep:", rgb.shape, rgb.dtype, rgb.min(), rgb.max())
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(rgb).save(out_path)
 
 def main() -> None:
     parser = argparse.ArgumentParser()

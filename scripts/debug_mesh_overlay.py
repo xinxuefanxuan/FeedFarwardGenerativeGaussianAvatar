@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Dict, Tuple
 
 import numpy as np
 from datasets.nersemble_dataset import NersembleFastAvatarDataset
 from models.geometry.flame_wrapper import FlameWrapper
 from models.geometry.mesh_ops import mesh_vertex_normals
-from models.geometry.projection import project_mesh_vertices
 from models.geometry.uv_ops import build_geometry_maps_placeholder, build_uv_valid_mask
 from models.geometry.visibility import points_in_image_mask
 
@@ -54,45 +54,15 @@ def _draw_points(rgb: np.ndarray, points_uv: np.ndarray, valid_mask: np.ndarray)
     return canvas
 
 
-def _save_image(img, path):
-    import numpy as np
-    from pathlib import Path
-    from PIL import Image
+    return np.asarray(img, dtype=np.uint8)
 
-    try:
-        import torch
-        if torch.is_tensor(img):
-            img = img.detach().cpu().numpy()
-    except Exception:
-        pass
 
-    img = np.asarray(img)
-    print("[DEBUG overlay] before save:", img.shape, img.dtype, img.min(), img.max())
-
-    # 去掉 batch 维
-    if img.ndim == 4 and img.shape[0] == 1:
-        img = img[0]
-
-    # CHW -> HWC
-    if img.ndim == 3 and img.shape[0] in (1, 3, 4) and img.shape[-1] not in (1, 3, 4):
-        img = np.transpose(img, (1, 2, 0))
-
-    # 单通道 squeeze
-    if img.ndim == 3 and img.shape[-1] == 1:
-        img = img[..., 0]
-
-    # float -> uint8
-    if img.dtype != np.uint8:
-        img = img.astype(np.float32)
-        if img.max() <= 1.0:
-            img = (img * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            img = img.clip(0, 255).astype(np.uint8)
-
-    print("[DEBUG overlay] after prep:", img.shape, img.dtype, img.min(), img.max())
-
-    path = Path(path)
+def _save_image(img: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError("Pillow is required to save debug images") from exc
     Image.fromarray(img).save(path)
 
 
@@ -116,8 +86,14 @@ def main() -> None:
     parser.add_argument(
         "--transform-mode",
         type=str,
-        default="unknown",
-        choices=["unknown", "cam2world", "world2cam"],
+        default="world2cam",
+        choices=["none", "cam2world", "world2cam"],
+        help="Which projection chain to use for final overlay output.",
+    )
+    parser.add_argument(
+        "--debug-projection",
+        action="store_true",
+        help="Print detailed projection statistics for none/world2cam/cam2world chains.",
     )
     args = parser.parse_args()
 
@@ -159,7 +135,6 @@ def main() -> None:
 
     print("Saved mesh overlay:", args.out_overlay)
     print("Saved UV placeholder outputs:", args.out_uv_mask, args.out_uv_pos, args.out_uv_nrm)
-    print("Visible projected vertices:", int(vis.sum()), "/", int(vis.shape[0]))
 
 
 if __name__ == "__main__":

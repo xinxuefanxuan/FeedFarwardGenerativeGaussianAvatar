@@ -89,6 +89,10 @@ python scripts/visualize_sample.py \
   --out outputs/visualize/sample_rgb.png
 ```
 
+> 如果 `PIL.Image.fromarray()` 保存失败，请优先检查 `rgb` 是否为 CHW（如 `(3,H,W)`）并确认已转换为 HWC。
+
+> 如果 `world2cam` 和 `cam2world` 都是 `0 visible vertices`，请优先检查 FLAME 全局变换（translation/rotation）以及相机 z 方向约定。
+
 ### 2) FLAME mesh 投影并保存 overlay + UV 占位结果
 ```bash
 python scripts/debug_mesh_overlay.py \
@@ -99,7 +103,7 @@ python scripts/debug_mesh_overlay.py \
   --flame-masks /home/yuanyuhao/VHAP/asset/flame/FLAME_masks.pkl \
   --uv-masks /home/yuanyuhao/VHAP/asset/flame/uv_masks.npz \
   --uv-resolution 256 \
-  --transform-mode unknown \
+  --transform-mode world2cam \
   --out-overlay outputs/debug/mesh_overlay.png \
   --out-uv-mask outputs/debug/uv_valid_mask.npy \
   --out-uv-pos outputs/debug/uv_position_map.npy \
