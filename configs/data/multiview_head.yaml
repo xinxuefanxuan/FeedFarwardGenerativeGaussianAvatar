@@ -1,0 +1,11 @@
+data:
+  dataset_name: multiview_head
+  root: data/multiview_head
+  split:
+    train: train
+    val: val
+    test: test
+  assumptions:
+    # TODO: 视图数量、帧组织方式待确认。
+    supports_multiview: true
+    supports_multiframe: true
