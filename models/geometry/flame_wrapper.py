@@ -42,13 +42,16 @@ class FlameWrapper:
         head_template_mesh_path: str | Path,
         masks_path: str | Path,
         uv_masks_path: str | Path,
+        recenter_head_y: bool = True,
     ) -> None:
         self.flame_model_path = Path(flame_model_path)
         self.head_template_mesh_path = Path(head_template_mesh_path)
         self.masks_path = Path(masks_path)
         self.uv_masks_path = Path(uv_masks_path)
+        self.recenter_head_y = recenter_head_y
 
         self.template_vertices, self.template_faces = _load_obj_vertices_faces(self.head_template_mesh_path)
+        self.template_y_mean = float(self.template_vertices[:, 1].mean())
 
     def validate_assets(self) -> None:
         """Raise if required FLAME assets are missing."""
@@ -67,11 +70,16 @@ class FlameWrapper:
 
         Current behavior:
         - Uses head template mesh as base geometry.
+        - Applies head-centered y recentering to remove template y bias.
         - Applies only global translation when provided.
 
         TODO: replace with full FLAME forward when model/runtime is integrated.
         """
         vertices = self.template_vertices.copy()
+
+        if self.recenter_head_y:
+            vertices[:, 1] -= self.template_y_mean
+
         translation = flame_params.get("translation")
         if translation is not None:
             translation = np.asarray(translation, dtype=np.float32).reshape(-1)
