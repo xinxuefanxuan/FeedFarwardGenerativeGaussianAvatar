@@ -71,6 +71,8 @@ class Stage1PriorBuilder(nn.Module):
         )
         uv_feature_single_raw = uv_pack["uv_feature_single"]
         uv_feature_single_masked = uv_pack["uv_feature_single"] * uv_pack["uv_visibility_single"]
+        uv_confidence_single = uv_pack["confidence"][:, 0]
+        uv_feature_single_weighted = uv_feature_single_masked * uv_confidence_single
 
         return {
             "image_features": image_features,
@@ -84,6 +86,8 @@ class Stage1PriorBuilder(nn.Module):
             "canonical_uv": refined_uv,
             "uv_feature_single_raw": uv_feature_single_raw,
             "uv_feature_single_masked": uv_feature_single_masked,
+            "uv_feature_single_weighted": uv_feature_single_weighted,
+            "uv_confidence_single": uv_confidence_single,
             "uv_feature_single": uv_pack["uv_feature_single"],
             "uv_visibility_single": uv_pack["uv_visibility_single"],
             "uv_face_index": uv_pack["uv_face_index"],

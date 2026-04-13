@@ -413,8 +413,10 @@ def project_image_features_to_surface(
                 uv_normals_flat=uv_normals_flat,
                 valid_flat=valid_flat,
                 uv_resolution=uv_resolution,
-                use_front_facing=True,
+                use_front_facing=(v > 1),
                 depth_map=depth_map,
+                depth_abs_tol=1.0e-2,
+                depth_rel_tol=5.0e-2,
             )
             uv_features[bi, vi] = sampled
             uv_visibility[bi, vi, 0] = vis
@@ -437,8 +439,10 @@ def project_image_features_to_surface(
                 uv_normals_flat=uv_normals_flat,
                 valid_flat=(rast_flip["uv_valid_mask"][0, 0].view(-1) > 0),
                 uv_resolution=uv_resolution,
-                use_front_facing=True,
+                use_front_facing=(v > 1),
                 depth_map=depth_map,
+                depth_abs_tol=1.0e-2,
+                depth_rel_tol=5.0e-2,
             )
             uv_feature_single_vflip[bi] = sampled_flip
 

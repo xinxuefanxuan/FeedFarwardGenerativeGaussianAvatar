@@ -220,8 +220,10 @@ def main() -> None:
             for k in (
                 "uv_feature_single_raw",
                 "uv_feature_single_masked",
+                "uv_feature_single_weighted",
                 "uv_feature_single_vflip",
                 "uv_visibility_single",
+                "uv_confidence_single",
                 "uv_face_index",
                 "uv_barycentric_vis",
                 "uv_sample_xy",
@@ -230,8 +232,10 @@ def main() -> None:
             projection_debug = {
                 "uv_feature_single_raw": outputs["uv_feature_single_raw"],
                 "uv_feature_single_masked": outputs["uv_feature_single_masked"],
+                "uv_feature_single_weighted": outputs["uv_feature_single_weighted"],
                 "uv_feature_single_vflip": outputs["uv_feature_single_vflip"],
                 "uv_visibility_single": outputs["uv_visibility_single"],
+                "uv_confidence_single": outputs["uv_confidence_single"],
                 "uv_face_index": outputs["uv_face_index"],
                 "uv_barycentric_vis": outputs["uv_barycentric_vis"],
                 "uv_sample_xy": outputs["uv_sample_xy"],
@@ -252,6 +256,10 @@ def main() -> None:
             projection_debug["uv_feature_single_raw"] = projection_debug["uv_feature_single"]
             projection_debug["uv_feature_single_masked"] = (
                 projection_debug["uv_feature_single"] * projection_debug["uv_visibility_single"]
+            )
+            projection_debug["uv_confidence_single"] = batch["confidence"][:, 0]
+            projection_debug["uv_feature_single_weighted"] = (
+                projection_debug["uv_feature_single_masked"] * projection_debug["uv_confidence_single"]
             )
 
     uv_valid_mask = outputs["uv_valid_mask"][0, 0].detach().cpu().numpy()
@@ -300,6 +308,15 @@ def main() -> None:
         uv_feature_single_masked_vis = _minmax_chw_to_hwc(pad)
     _save_rgb_png(uv_feature_single_masked_vis, out_dir / "uv_feature_single_masked.png")
 
+    uv_feature_single_weighted = projection_debug["uv_feature_single_weighted"][0].detach().cpu().numpy()
+    if uv_feature_single_weighted.shape[0] >= 3:
+        uv_feature_single_weighted_vis = _minmax_chw_to_hwc(uv_feature_single_weighted[:3])
+    else:
+        pad = np.zeros((3, uv_feature_single_weighted.shape[1], uv_feature_single_weighted.shape[2]), dtype=np.float32)
+        pad[: uv_feature_single_weighted.shape[0]] = uv_feature_single_weighted
+        uv_feature_single_weighted_vis = _minmax_chw_to_hwc(pad)
+    _save_rgb_png(uv_feature_single_weighted_vis, out_dir / "uv_feature_single_weighted.png")
+
     uv_feature_single_vflip = projection_debug["uv_feature_single_vflip"][0].detach().cpu().numpy()
     if uv_feature_single_vflip.shape[0] >= 3:
         uv_feature_single_vflip_vis = _minmax_chw_to_hwc(uv_feature_single_vflip[:3])
@@ -312,6 +329,10 @@ def main() -> None:
     uv_visibility_single = projection_debug["uv_visibility_single"][0, 0].detach().cpu().numpy()
     uv_visibility_single = uv_visibility_single / max(float(uv_visibility_single.max()), 1.0e-8)
     _save_gray_png(uv_visibility_single, out_dir / "uv_visibility_single.png")
+
+    uv_confidence_single = projection_debug["uv_confidence_single"][0, 0].detach().cpu().numpy()
+    uv_confidence_single = np.clip(uv_confidence_single, 0.0, 1.0)
+    _save_gray_png(uv_confidence_single, out_dir / "uv_confidence_single.png")
 
     uv_face_index = projection_debug["uv_face_index"][0, 0].detach().cpu().numpy()
     uv_face_index = uv_face_index - float(uv_face_index.min())
@@ -353,11 +374,19 @@ def main() -> None:
     fused_uv_map = outputs["fused_uv_feature_map"][0].detach().cpu().numpy()
     fused_masked_l1 = float(np.mean(np.abs(fused_uv_map - uv_feature_single_masked)))
     fused_masked_l2 = float(np.sqrt(np.mean((fused_uv_map - uv_feature_single_masked) ** 2)))
+    conf_mean = float(uv_confidence_single.mean())
+    conf_nonzero_ratio = float((uv_confidence_single > 1.0e-8).mean())
+    weighted_fused_l1 = float(np.mean(np.abs(fused_uv_map - uv_feature_single_weighted)))
+    weighted_fused_l2 = float(np.sqrt(np.mean((fused_uv_map - uv_feature_single_weighted) ** 2)))
     print(f"[single-view-debug] uv_visibility_single valid ratio: {vis_ratio:.6f}")
+    print(f"[single-view-debug] uv_confidence_single mean: {conf_mean:.6f}")
+    print(f"[single-view-debug] uv_confidence_single nonzero ratio: {conf_nonzero_ratio:.6f}")
     print(f"[single-view-debug] uv_feature_single_raw nonzero ratio: {raw_nonzero_ratio:.6f}")
     print(f"[single-view-debug] uv_feature_single_masked nonzero ratio: {masked_nonzero_ratio:.6f}")
     print(f"[single-view-debug] fused_vs_masked L1: {fused_masked_l1:.6f}")
     print(f"[single-view-debug] fused_vs_masked L2: {fused_masked_l2:.6f}")
+    print(f"[single-view-debug] weighted_vs_fused L1: {weighted_fused_l1:.6f}")
+    print(f"[single-view-debug] weighted_vs_fused L2: {weighted_fused_l2:.6f}")
 
     print("Saved Stage1 debug outputs to:", out_dir)
 
