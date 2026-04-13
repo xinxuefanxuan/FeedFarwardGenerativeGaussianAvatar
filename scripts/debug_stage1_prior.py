@@ -223,6 +223,7 @@ def main() -> None:
                 "uv_visibility_single",
                 "uv_face_index",
                 "uv_barycentric_vis",
+                "uv_sample_xy",
             )
         ):
             projection_debug = {
@@ -231,6 +232,7 @@ def main() -> None:
                 "uv_visibility_single": outputs["uv_visibility_single"],
                 "uv_face_index": outputs["uv_face_index"],
                 "uv_barycentric_vis": outputs["uv_barycentric_vis"],
+                "uv_sample_xy": outputs["uv_sample_xy"],
             }
         else:
             image_features = model.builder.encoder(batch["images"])
@@ -302,6 +304,32 @@ def main() -> None:
 
     uv_barycentric_vis = projection_debug["uv_barycentric_vis"][0].detach().cpu().numpy()
     _save_rgb_png(_minmax_chw_to_hwc(uv_barycentric_vis), out_dir / "uv_barycentric_vis.png")
+
+    uv_sample_xy = projection_debug["uv_sample_xy"][0].detach().cpu().numpy()
+    np.save(out_dir / "uv_sample_xy.npy", uv_sample_xy)
+    sample_x = uv_sample_xy[0]
+    sample_y = uv_sample_xy[1]
+    img_h = float(batch["images"].shape[-2])
+    img_w = float(batch["images"].shape[-1])
+    sample_xn = np.clip(sample_x / max(img_w - 1.0, 1.0), 0.0, 1.0)
+    sample_yn = np.clip(sample_y / max(img_h - 1.0, 1.0), 0.0, 1.0)
+    sample_mask = np.clip(projection_debug["uv_visibility_single"][0, 0].detach().cpu().numpy(), 0.0, 1.0)
+    _save_rgb_png(np.stack([sample_xn, sample_yn, sample_mask], axis=-1), out_dir / "uv_sample_xy.png")
+
+    input_rgb = batch["images"][0, 0, :3].detach().cpu().numpy()
+    reproject_vis = np.transpose(np.clip(input_rgb, 0.0, 1.0), (1, 2, 0))
+    xy = uv_sample_xy.reshape(2, -1).T
+    vis = sample_mask.reshape(-1) > 0.5
+    if vis.any():
+        xy_valid = xy[vis]
+        stride = max(1, xy_valid.shape[0] // 15000)
+        xy_plot = np.round(xy_valid[::stride]).astype(np.int32)
+        x = np.clip(xy_plot[:, 0], 0, reproject_vis.shape[1] - 1)
+        y = np.clip(xy_plot[:, 1], 0, reproject_vis.shape[0] - 1)
+        reproject_vis[y, x, 0] = 1.0
+        reproject_vis[y, x, 1] = 0.0
+        reproject_vis[y, x, 2] = 0.0
+    _save_rgb_png(reproject_vis, out_dir / "reprojected_points_on_image.png")
 
     print("Saved Stage1 debug outputs to:", out_dir)
 

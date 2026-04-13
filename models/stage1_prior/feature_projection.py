@@ -180,6 +180,23 @@ def _project_points_world2cam(points: torch.Tensor, intrinsics: torch.Tensor, wo
     return uv_h[:, :2], z
 
 
+def _inside_mask(
+    proj_xy: torch.Tensor,
+    proj_z: torch.Tensor,
+    valid_flat: torch.Tensor,
+    h: int,
+    w: int,
+) -> torch.Tensor:
+    return (
+        (proj_xy[:, 0] >= 0)
+        & (proj_xy[:, 0] <= (w - 1))
+        & (proj_xy[:, 1] >= 0)
+        & (proj_xy[:, 1] <= (h - 1))
+        & (proj_z > 0)
+        & valid_flat
+    )
+
+
 def _sample_view(
     feat_view: torch.Tensor,
     intrinsics: torch.Tensor,
@@ -189,9 +206,17 @@ def _sample_view(
     valid_flat: torch.Tensor,
     uv_resolution: int,
     use_front_facing: bool,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     _, h, w = feat_view.shape
-    proj_xy, proj_z = _project_points_world2cam(uv_points, intrinsics, world2cam)
+    proj_xy_w2c, proj_z_w2c = _project_points_world2cam(uv_points, intrinsics, world2cam)
+    proj_xy_c2w, proj_z_c2w = _project_points_world2cam(uv_points, intrinsics, torch.linalg.inv(world2cam))
+
+    inside_w2c = _inside_mask(proj_xy_w2c, proj_z_w2c, valid_flat, h, w)
+    inside_c2w = _inside_mask(proj_xy_c2w, proj_z_c2w, valid_flat, h, w)
+
+    use_inverted = inside_c2w.sum() > inside_w2c.sum()
+    proj_xy = proj_xy_c2w if use_inverted else proj_xy_w2c
+    proj_z = proj_z_c2w if use_inverted else proj_z_w2c
 
     gx = ((proj_xy[:, 0] + 0.5) / float(w)) * 2.0 - 1.0
     gy = ((proj_xy[:, 1] + 0.5) / float(h)) * 2.0 - 1.0
@@ -204,14 +229,7 @@ def _sample_view(
         align_corners=False,
     )[0]
 
-    inside = (
-        (proj_xy[:, 0] >= 0)
-        & (proj_xy[:, 0] <= (w - 1))
-        & (proj_xy[:, 1] >= 0)
-        & (proj_xy[:, 1] <= (h - 1))
-        & (proj_z > 0)
-        & valid_flat
-    )
+    inside = _inside_mask(proj_xy, proj_z, valid_flat, h, w)
 
     if use_front_facing:
         cam2world = torch.linalg.inv(world2cam)
@@ -220,7 +238,7 @@ def _sample_view(
         front_facing = (uv_normals_flat * view_dir).sum(dim=-1) > 0
         inside = inside & front_facing
 
-    return sampled, inside.view(uv_resolution, uv_resolution).to(feat_view.dtype)
+    return sampled, inside.view(uv_resolution, uv_resolution).to(feat_view.dtype), proj_xy.view(uv_resolution, uv_resolution, 2)
 
 
 def project_image_features_to_surface(
@@ -270,6 +288,7 @@ def project_image_features_to_surface(
     uv_face_index = tri_idx.to(dtype).unsqueeze(0).unsqueeze(0).repeat(b, 1, 1, 1)
     uv_barycentric_vis = bary.permute(2, 0, 1).unsqueeze(0).repeat(b, 1, 1, 1)
     uv_feature_single_vflip = torch.zeros((b, c, uv_resolution, uv_resolution), device=device, dtype=dtype)
+    uv_sample_xy = torch.zeros((b, 2, uv_resolution, uv_resolution), device=device, dtype=dtype)
 
     for bi in range(b):
         verts = mesh_vertices[bi]
@@ -289,7 +308,7 @@ def project_image_features_to_surface(
         use_front_facing = v > 1
 
         for vi in range(v):
-            sampled, vis = _sample_view(
+            sampled, vis, sample_xy = _sample_view(
                 feat_view=image_features[bi, vi],
                 intrinsics=intrinsics[bi, vi],
                 world2cam=transform_matrices[bi, vi],
@@ -301,6 +320,8 @@ def project_image_features_to_surface(
             )
             uv_features[bi, vi] = sampled
             uv_visibility[bi, vi, 0] = vis
+            if vi == 0:
+                uv_sample_xy[bi] = sample_xy.permute(2, 0, 1)
 
         # debug maps from first view
         uv_feature_single[bi] = uv_features[bi, 0]
@@ -310,7 +331,7 @@ def project_image_features_to_surface(
             # minimal A/B test: flip UV-v and re-sample.
             rast_flip = _rasterize_uv(uv_vertices, uv_faces, uv_resolution, v_flip=True)
             uv_pos_flip = _interpolate_uv_attribute(verts, uv_mesh_faces, rast_flip["tri_idx"], rast_flip["bary"]).view(-1, 3)
-            sampled_flip, _ = _sample_view(
+            sampled_flip, _, _ = _sample_view(
                 feat_view=image_features[bi, 0],
                 intrinsics=intrinsics[bi, 0],
                 world2cam=transform_matrices[bi, 0],
@@ -333,6 +354,7 @@ def project_image_features_to_surface(
         "uv_face_index": uv_face_index,
         "uv_barycentric_vis": uv_barycentric_vis,
         "uv_feature_single_vflip": uv_feature_single_vflip,
+        "uv_sample_xy": uv_sample_xy,
     }
 
 
@@ -354,4 +376,5 @@ def project_surface_to_uv(projection_out: Dict[str, torch.Tensor], confidence: t
         "uv_face_index": projection_out["uv_face_index"],
         "uv_barycentric_vis": projection_out["uv_barycentric_vis"],
         "uv_feature_single_vflip": projection_out["uv_feature_single_vflip"],
+        "uv_sample_xy": projection_out["uv_sample_xy"],
     }
