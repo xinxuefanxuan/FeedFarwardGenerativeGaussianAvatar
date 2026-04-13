@@ -33,8 +33,8 @@ class UVFusionModule(nn.Module):
 
         if v == 1:
             weights = (raw > 0).to(dtype)
-            fused = uv_features[:, 0]
-            fused_confidence = raw[:, 0]
+            fused = uv_features[:, 0] * raw[:, 0]
+            fused_confidence = raw[:, 0].clamp(max=1.0)
             return {
                 "fused_uv_features": fused,
                 "fused_confidence": fused_confidence,

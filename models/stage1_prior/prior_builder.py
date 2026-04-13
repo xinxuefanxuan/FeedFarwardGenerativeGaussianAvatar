@@ -69,6 +69,8 @@ class Stage1PriorBuilder(nn.Module):
             uv_position_map=uv_pack["uv_position_map"],
             uv_normal_map=uv_pack["uv_normal_map"],
         )
+        uv_feature_single_raw = uv_pack["uv_feature_single"]
+        uv_feature_single_masked = uv_pack["uv_feature_single"] * uv_pack["uv_visibility_single"]
 
         return {
             "image_features": image_features,
@@ -80,4 +82,12 @@ class Stage1PriorBuilder(nn.Module):
             "uv_position_map": geom["uv_position_map"],
             "uv_normal_map": geom["uv_normal_map"],
             "canonical_uv": refined_uv,
+            "uv_feature_single_raw": uv_feature_single_raw,
+            "uv_feature_single_masked": uv_feature_single_masked,
+            "uv_feature_single": uv_pack["uv_feature_single"],
+            "uv_visibility_single": uv_pack["uv_visibility_single"],
+            "uv_face_index": uv_pack["uv_face_index"],
+            "uv_barycentric_vis": uv_pack["uv_barycentric_vis"],
+            "uv_feature_single_vflip": uv_pack["uv_feature_single_vflip"],
+            "uv_sample_xy": uv_pack["uv_sample_xy"],
         }
