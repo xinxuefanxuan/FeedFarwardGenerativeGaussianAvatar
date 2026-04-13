@@ -15,24 +15,42 @@ from models.stage1_prior.uv_refinement import UVRefinementNet
 
 
 class Stage1PriorBuilder(nn.Module):
-    """Build canonical prior by chaining encoder -> projection -> UV fusion -> geometry maps."""
+    """Build canonical prior by chaining encoder -> real projection -> UV fusion -> geometry maps."""
 
-    def __init__(self, uv_resolution: int = 256) -> None:
+    def __init__(
+        self,
+        uv_resolution: int = 256,
+        template_mesh_path: str = "/home/yuanyuhao/VHAP/asset/flame/head_template_mesh.obj",
+    ) -> None:
         super().__init__()
         self.uv_resolution = uv_resolution
+        self.template_mesh_path = template_mesh_path
         self.encoder = DINOv2Encoder(variant="vitb14", freeze=True)
         self.uv_fusion = UVFusionModule()
         self.uv_refinement = UVRefinementNet()
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        if "images" not in batch:
-            raise KeyError("Stage1PriorBuilder expects `images` in batch")
+        required = ["images", "mesh_vertices", "mesh_faces", "intrinsics", "transform_matrices"]
+        missing = [k for k in required if k not in batch]
+        if missing:
+            raise KeyError(f"Stage1PriorBuilder missing required keys: {missing}")
 
         image_features = self.encoder(batch["images"])
-        surface_features = project_image_features_to_surface(image_features, uv_resolution=self.uv_resolution)
+
+        projection_out = project_image_features_to_surface(
+            image_features=image_features,
+            mesh_vertices=batch["mesh_vertices"],
+            mesh_faces=batch["mesh_faces"],
+            intrinsics=batch["intrinsics"],
+            transform_matrices=batch["transform_matrices"],
+            template_mesh_path=batch.get("template_mesh_path", self.template_mesh_path),
+            uv_resolution=self.uv_resolution,
+            uv_vertices=batch.get("uv_vertices"),
+            uv_faces=batch.get("uv_faces"),
+        )
+
         uv_pack = project_surface_to_uv(
-            surface_features,
-            visibility=batch.get("visibility"),
+            projection_out=projection_out,
             confidence=batch.get("confidence"),
         )
 
@@ -47,11 +65,13 @@ class Stage1PriorBuilder(nn.Module):
             fused_uv_features=refined_uv,
             fused_confidence=fusion_out["fused_confidence"],
             canonical_vertices=batch.get("canonical_vertices"),
+            uv_valid_mask=uv_pack["uv_valid_mask"],
+            uv_position_map=uv_pack["uv_position_map"],
+            uv_normal_map=uv_pack["uv_normal_map"],
         )
 
         return {
             "image_features": image_features,
-            "surface_features": surface_features,
             "uv_features": uv_pack["uv_features"],
             "fused_uv_feature_map": refined_uv,
             "fused_confidence_map": fusion_out["fused_confidence"],
