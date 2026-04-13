@@ -9,7 +9,7 @@ from torch import nn
 
 
 class UVFusionModule(nn.Module):
-    """Fuse multi-view UV features using visibility/confidence weighted average."""
+    """Fuse multi-view UV features with visibility/confidence-aware weights."""
 
     def forward(
         self,
@@ -29,11 +29,22 @@ class UVFusionModule(nn.Module):
         if confidence is None:
             confidence = torch.ones((b, v, 1, h, w), device=device, dtype=dtype)
 
-        weights = torch.clamp(visibility, min=0.0) * torch.clamp(confidence, min=0.0)
-        denom = weights.sum(dim=1, keepdim=False).clamp_min(1.0e-6)
+        raw = torch.clamp(visibility, min=0.0) * torch.clamp(confidence, min=0.0)
 
-        fused = (uv_features * weights).sum(dim=1) / denom
-        fused_confidence = denom / float(v)
+        if v == 1:
+            weights = (raw > 0).to(dtype)
+            fused = uv_features[:, 0]
+            fused_confidence = raw[:, 0]
+            return {
+                "fused_uv_features": fused,
+                "fused_confidence": fused_confidence,
+                "fusion_weights": weights,
+            }
+
+        denom = raw.sum(dim=1, keepdim=True).clamp_min(1.0e-6)
+        weights = raw / denom
+        fused = (uv_features * weights).sum(dim=1)
+        fused_confidence = raw.sum(dim=1).clamp(max=1.0)
 
         return {
             "fused_uv_features": fused,

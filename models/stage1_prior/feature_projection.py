@@ -16,11 +16,13 @@ import torch.nn.functional as F
 class UVTemplate:
     uv_vertices: torch.Tensor
     uv_faces: torch.Tensor
+    mesh_faces_from_obj: torch.Tensor
 
 
-def _parse_obj_with_uv(obj_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+def _parse_obj_with_uv(obj_path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     uv_vertices = []
     uv_faces = []
+    mesh_faces = []
     with open(obj_path, "r", encoding="utf-8") as f:
         for line in f:
             if line.startswith("vt "):
@@ -28,27 +30,40 @@ def _parse_obj_with_uv(obj_path: Path) -> Tuple[np.ndarray, np.ndarray]:
                 uv_vertices.append([float(u), float(v)])
             elif line.startswith("f "):
                 parts = line.strip().split()[1:]
+                vidx = []
                 vt_idx = []
                 for p in parts:
                     comps = p.split("/")
+                    if len(comps) >= 1 and comps[0] != "":
+                        vidx.append(int(comps[0]) - 1)
                     if len(comps) >= 2 and comps[1] != "":
                         vt_idx.append(int(comps[1]) - 1)
-                if len(vt_idx) == 3:
+                if len(vidx) == 3 and len(vt_idx) == 3:
+                    mesh_faces.append(vidx)
                     uv_faces.append(vt_idx)
-                elif len(vt_idx) > 3:
-                    for i in range(1, len(vt_idx) - 1):
+                elif len(vidx) > 3 and len(vt_idx) > 3:
+                    for i in range(1, len(vidx) - 1):
+                        mesh_faces.append([vidx[0], vidx[i], vidx[i + 1]])
                         uv_faces.append([vt_idx[0], vt_idx[i], vt_idx[i + 1]])
 
-    if len(uv_vertices) == 0 or len(uv_faces) == 0:
-        raise ValueError(f"OBJ missing UV data: {obj_path}")
+    if len(uv_vertices) == 0 or len(uv_faces) == 0 or len(mesh_faces) == 0:
+        raise ValueError(f"OBJ missing UV/face data: {obj_path}")
 
-    return np.asarray(uv_vertices, dtype=np.float32), np.asarray(uv_faces, dtype=np.int64)
+    return (
+        np.asarray(uv_vertices, dtype=np.float32),
+        np.asarray(uv_faces, dtype=np.int64),
+        np.asarray(mesh_faces, dtype=np.int64),
+    )
 
 
 @lru_cache(maxsize=4)
 def load_uv_template(obj_path: str) -> UVTemplate:
-    uv_vertices, uv_faces = _parse_obj_with_uv(Path(obj_path))
-    return UVTemplate(torch.from_numpy(uv_vertices), torch.from_numpy(uv_faces))
+    uv_vertices, uv_faces, mesh_faces = _parse_obj_with_uv(Path(obj_path))
+    return UVTemplate(
+        uv_vertices=torch.from_numpy(uv_vertices),
+        uv_faces=torch.from_numpy(uv_faces),
+        mesh_faces_from_obj=torch.from_numpy(mesh_faces),
+    )
 
 
 def _rasterize_uv(uv_vertices: torch.Tensor, uv_faces: torch.Tensor, uv_resolution: int) -> Dict[str, torch.Tensor]:
@@ -85,7 +100,7 @@ def _rasterize_uv(uv_vertices: torch.Tensor, uv_faces: torch.Tensor, uv_resoluti
         x_candidates = xs[x0 : x1 + 1]
         y_candidates = ys[y0 : y1 + 1]
         gx, gy = torch.meshgrid(x_candidates, y_candidates, indexing="xy")
-        pts = torch.stack([gx.reshape(-1), (1.0 - gy).reshape(-1)], dim=-1)  # [N,2]
+        pts = torch.stack([gx.reshape(-1), (1.0 - gy).reshape(-1)], dim=-1)
 
         v0 = p1 - p0
         v1 = p2 - p0
@@ -132,13 +147,13 @@ def _vertex_normals(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor
     return F.normalize(normals, dim=-1, eps=1e-8)
 
 
-def _interpolate_uv_attribute(vertex_attr: torch.Tensor, faces: torch.Tensor, tri_idx: torch.Tensor, bary: torch.Tensor) -> torch.Tensor:
+def _interpolate_uv_attribute(vertex_attr: torch.Tensor, uv_mesh_faces: torch.Tensor, tri_idx: torch.Tensor, bary: torch.Tensor) -> torch.Tensor:
     h, w = tri_idx.shape
     out = torch.zeros((h, w, vertex_attr.shape[-1]), device=vertex_attr.device, dtype=vertex_attr.dtype)
     valid = tri_idx >= 0
     if valid.any():
         fi = tri_idx[valid]
-        face_vid = faces[fi]
+        face_vid = uv_mesh_faces[fi]
         vals = vertex_attr[face_vid]
         bw = bary[valid].unsqueeze(-1)
         out[valid] = (vals * bw).sum(dim=1)
@@ -176,10 +191,12 @@ def project_image_features_to_surface(
     if uv_vertices is None or uv_faces is None:
         uv_template = load_uv_template(template_mesh_path)
         uv_vertices = uv_template.uv_vertices.to(device=device, dtype=dtype)
-        uv_faces = uv_template.uv_faces.to(device=device)
+        uv_faces = uv_template.uv_faces.to(device=device, dtype=torch.long)
+        uv_mesh_faces = uv_template.mesh_faces_from_obj.to(device=device, dtype=torch.long)
     else:
         uv_vertices = uv_vertices.to(device=device, dtype=dtype)
         uv_faces = uv_faces.to(device=device, dtype=torch.long)
+        uv_mesh_faces = uv_faces  # explicit assumption for synthetic/debug batch
 
     faces = mesh_faces.to(device=device, dtype=torch.long)
 
@@ -197,22 +214,37 @@ def project_image_features_to_surface(
         verts = mesh_vertices[bi]
         v_normals = _vertex_normals(verts, faces)
 
-        uv_pos = _interpolate_uv_attribute(verts, faces, tri_idx, bary)
-        uv_nrm = F.normalize(_interpolate_uv_attribute(v_normals, faces, tri_idx, bary), dim=-1, eps=1e-8)
+        uv_pos = _interpolate_uv_attribute(verts, uv_mesh_faces, tri_idx, bary)
+        uv_nrm = F.normalize(_interpolate_uv_attribute(v_normals, uv_mesh_faces, tri_idx, bary), dim=-1, eps=1e-8)
 
         uv_position_map[bi] = uv_pos.permute(2, 0, 1)
         uv_normal_map[bi] = uv_nrm.permute(2, 0, 1)
 
         uv_points = uv_pos.view(-1, 3)
+        uv_normals_flat = uv_nrm.view(-1, 3)
         valid_flat = uv_valid_mask[bi, 0].view(-1) > 0
 
         for vi in range(v):
-            proj_xy, proj_z = _project_points_world2cam(uv_points, intrinsics[bi, vi], transform_matrices[bi, vi])
-            gx = (proj_xy[:, 0] / max(float(w - 1), 1.0)) * 2.0 - 1.0
-            gy = (proj_xy[:, 1] / max(float(h - 1), 1.0)) * 2.0 - 1.0
+            world2cam = transform_matrices[bi, vi]
+            proj_xy, proj_z = _project_points_world2cam(uv_points, intrinsics[bi, vi], world2cam)
+
+            # align_corners=False normalization
+            gx = ((proj_xy[:, 0] + 0.5) / float(w)) * 2.0 - 1.0
+            gy = ((proj_xy[:, 1] + 0.5) / float(h)) * 2.0 - 1.0
             grid = torch.stack([gx, gy], dim=-1).view(1, uv_resolution, uv_resolution, 2)
-            sampled = F.grid_sample(image_features[bi, vi].unsqueeze(0), grid, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+            sampled = F.grid_sample(
+                image_features[bi, vi].unsqueeze(0),
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )[0]
             uv_features[bi, vi] = sampled
+
+            cam2world = torch.linalg.inv(world2cam)
+            cam_origin = cam2world[:3, 3]
+            view_dir = F.normalize(cam_origin.unsqueeze(0) - uv_points, dim=-1, eps=1e-8)
+            front_facing = (uv_normals_flat * view_dir).sum(dim=-1) > 0
 
             inside = (
                 (proj_xy[:, 0] >= 0)
@@ -220,6 +252,7 @@ def project_image_features_to_surface(
                 & (proj_xy[:, 1] >= 0)
                 & (proj_xy[:, 1] <= (h - 1))
                 & (proj_z > 0)
+                & front_facing
                 & valid_flat
             )
             uv_visibility[bi, vi, 0] = inside.view(uv_resolution, uv_resolution).to(dtype)
