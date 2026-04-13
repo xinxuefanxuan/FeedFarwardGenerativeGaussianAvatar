@@ -197,6 +197,86 @@ def _inside_mask(
     )
 
 
+def _select_world2cam(
+    vertices: torch.Tensor,
+    intrinsics: torch.Tensor,
+    transform_matrix: torch.Tensor,
+    h: int,
+    w: int,
+) -> torch.Tensor:
+    proj_xy_w2c, proj_z_w2c = _project_points_world2cam(vertices, intrinsics, transform_matrix)
+    proj_xy_c2w, proj_z_c2w = _project_points_world2cam(vertices, intrinsics, torch.linalg.inv(transform_matrix))
+    valid = torch.ones((vertices.shape[0],), dtype=torch.bool, device=vertices.device)
+    inside_w2c = _inside_mask(proj_xy_w2c, proj_z_w2c, valid, h, w).sum()
+    inside_c2w = _inside_mask(proj_xy_c2w, proj_z_c2w, valid, h, w).sum()
+    return torch.linalg.inv(transform_matrix) if inside_c2w > inside_w2c else transform_matrix
+
+
+def _rasterize_depth_image(
+    vertices: torch.Tensor,
+    faces: torch.Tensor,
+    intrinsics: torch.Tensor,
+    world2cam: torch.Tensor,
+    h: int,
+    w: int,
+) -> torch.Tensor:
+    proj_xy, proj_z = _project_points_world2cam(vertices, intrinsics, world2cam)
+    depth = torch.full((h, w), float("inf"), device=vertices.device, dtype=vertices.dtype)
+    xs = torch.arange(w, device=vertices.device, dtype=vertices.dtype) + 0.5
+    ys = torch.arange(h, device=vertices.device, dtype=vertices.dtype) + 0.5
+
+    for fi in range(faces.shape[0]):
+        tri_vid = faces[fi]
+        tri_xy = proj_xy[tri_vid]
+        tri_z = proj_z[tri_vid]
+        if (tri_z <= 0).any():
+            continue
+
+        min_x = int(torch.floor(torch.min(tri_xy[:, 0])).item())
+        max_x = int(torch.ceil(torch.max(tri_xy[:, 0])).item())
+        min_y = int(torch.floor(torch.min(tri_xy[:, 1])).item())
+        max_y = int(torch.ceil(torch.max(tri_xy[:, 1])).item())
+        min_x, max_x = max(0, min_x), min(w - 1, max_x)
+        min_y, max_y = max(0, min_y), min(h - 1, max_y)
+        if max_x < min_x or max_y < min_y:
+            continue
+
+        gx, gy = torch.meshgrid(xs[min_x : max_x + 1], ys[min_y : max_y + 1], indexing="xy")
+        pts = torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1)
+        p0, p1, p2 = tri_xy[0], tri_xy[1], tri_xy[2]
+        v0 = p1 - p0
+        v1 = p2 - p0
+        v2 = pts - p0
+        d00 = torch.dot(v0, v0)
+        d01 = torch.dot(v0, v1)
+        d11 = torch.dot(v1, v1)
+        d20 = (v2 * v0).sum(dim=-1)
+        d21 = (v2 * v1).sum(dim=-1)
+        denom = d00 * d11 - d01 * d01
+        if torch.abs(denom) < 1.0e-12:
+            continue
+        a = (d11 * d20 - d01 * d21) / denom
+        b = (d00 * d21 - d01 * d20) / denom
+        c = 1.0 - a - b
+        inside = (a >= -1.0e-4) & (b >= -1.0e-4) & (c >= -1.0e-4)
+        if not inside.any():
+            continue
+
+        idx_inside = torch.where(inside)[0]
+        local_w = max_x - min_x + 1
+        xi = idx_inside % local_w
+        yi = idx_inside // local_w
+        xx = min_x + xi
+        yy = min_y + yi
+        z_interp = c[idx_inside] * tri_z[0] + a[idx_inside] * tri_z[1] + b[idx_inside] * tri_z[2]
+        current = depth[yy, xx]
+        update = z_interp < current
+        if update.any():
+            depth[yy[update], xx[update]] = z_interp[update]
+
+    return depth
+
+
 def _sample_view(
     feat_view: torch.Tensor,
     intrinsics: torch.Tensor,
@@ -206,17 +286,12 @@ def _sample_view(
     valid_flat: torch.Tensor,
     uv_resolution: int,
     use_front_facing: bool,
+    depth_map: torch.Tensor | None = None,
+    depth_abs_tol: float = 2.0e-3,
+    depth_rel_tol: float = 1.0e-2,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     _, h, w = feat_view.shape
-    proj_xy_w2c, proj_z_w2c = _project_points_world2cam(uv_points, intrinsics, world2cam)
-    proj_xy_c2w, proj_z_c2w = _project_points_world2cam(uv_points, intrinsics, torch.linalg.inv(world2cam))
-
-    inside_w2c = _inside_mask(proj_xy_w2c, proj_z_w2c, valid_flat, h, w)
-    inside_c2w = _inside_mask(proj_xy_c2w, proj_z_c2w, valid_flat, h, w)
-
-    use_inverted = inside_c2w.sum() > inside_w2c.sum()
-    proj_xy = proj_xy_c2w if use_inverted else proj_xy_w2c
-    proj_z = proj_z_c2w if use_inverted else proj_z_w2c
+    proj_xy, proj_z = _project_points_world2cam(uv_points, intrinsics, world2cam)
 
     gx = ((proj_xy[:, 0] + 0.5) / float(w)) * 2.0 - 1.0
     gy = ((proj_xy[:, 1] + 0.5) / float(h)) * 2.0 - 1.0
@@ -237,6 +312,15 @@ def _sample_view(
         view_dir = F.normalize(cam_origin.unsqueeze(0) - uv_points, dim=-1, eps=1e-8)
         front_facing = (uv_normals_flat * view_dir).sum(dim=-1) > 0
         inside = inside & front_facing
+
+    if depth_map is not None:
+        px = torch.round(proj_xy[:, 0]).to(torch.long).clamp(0, w - 1)
+        py = torch.round(proj_xy[:, 1]).to(torch.long).clamp(0, h - 1)
+        depth_ref = depth_map[py, px]
+        depth_valid = torch.isfinite(depth_ref)
+        depth_tol = torch.maximum(depth_ref * depth_rel_tol, torch.full_like(depth_ref, depth_abs_tol))
+        depth_consistent = depth_valid & (torch.abs(proj_z - depth_ref) <= depth_tol)
+        inside = inside & depth_consistent
 
     return sampled, inside.view(uv_resolution, uv_resolution).to(feat_view.dtype), proj_xy.view(uv_resolution, uv_resolution, 2)
 
@@ -304,19 +388,33 @@ def project_image_features_to_surface(
         uv_normals_flat = uv_nrm.view(-1, 3)
         valid_flat = uv_valid_mask[bi, 0].view(-1) > 0
 
-        # single-view stage: keep filtering less strict.
-        use_front_facing = v > 1
-
         for vi in range(v):
+            _, h_img, w_img = image_features[bi, vi].shape
+            world2cam = _select_world2cam(
+                vertices=verts,
+                intrinsics=intrinsics[bi, vi],
+                transform_matrix=transform_matrices[bi, vi],
+                h=h_img,
+                w=w_img,
+            )
+            depth_map = _rasterize_depth_image(
+                vertices=verts,
+                faces=faces,
+                intrinsics=intrinsics[bi, vi],
+                world2cam=world2cam,
+                h=h_img,
+                w=w_img,
+            ) if v == 1 else None
             sampled, vis, sample_xy = _sample_view(
                 feat_view=image_features[bi, vi],
                 intrinsics=intrinsics[bi, vi],
-                world2cam=transform_matrices[bi, vi],
+                world2cam=world2cam,
                 uv_points=uv_points,
                 uv_normals_flat=uv_normals_flat,
                 valid_flat=valid_flat,
                 uv_resolution=uv_resolution,
-                use_front_facing=use_front_facing,
+                use_front_facing=True,
+                depth_map=depth_map,
             )
             uv_features[bi, vi] = sampled
             uv_visibility[bi, vi, 0] = vis
@@ -334,12 +432,13 @@ def project_image_features_to_surface(
             sampled_flip, _, _ = _sample_view(
                 feat_view=image_features[bi, 0],
                 intrinsics=intrinsics[bi, 0],
-                world2cam=transform_matrices[bi, 0],
+                world2cam=world2cam,
                 uv_points=uv_pos_flip,
                 uv_normals_flat=uv_normals_flat,
                 valid_flat=(rast_flip["uv_valid_mask"][0, 0].view(-1) > 0),
                 uv_resolution=uv_resolution,
-                use_front_facing=False,
+                use_front_facing=True,
+                depth_map=depth_map,
             )
             uv_feature_single_vflip[bi] = sampled_flip
 
