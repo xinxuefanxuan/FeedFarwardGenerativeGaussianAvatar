@@ -13,6 +13,7 @@ from PIL import Image
 
 from datasets.nersemble_dataset import NersembleFastAvatarDataset
 from models.geometry.flame_wrapper import FlameWrapper
+from models.stage1_prior.feature_projection import project_image_features_to_surface
 from models.stage1_prior.stage1_pipeline import Stage1CanonicalPrior
 
 
@@ -213,6 +214,37 @@ def main() -> None:
 
     with torch.no_grad():
         outputs = model(batch)
+        projection_debug = {}
+        if all(
+            k in outputs
+            for k in (
+                "uv_feature_single",
+                "uv_feature_single_vflip",
+                "uv_visibility_single",
+                "uv_face_index",
+                "uv_barycentric_vis",
+            )
+        ):
+            projection_debug = {
+                "uv_feature_single": outputs["uv_feature_single"],
+                "uv_feature_single_vflip": outputs["uv_feature_single_vflip"],
+                "uv_visibility_single": outputs["uv_visibility_single"],
+                "uv_face_index": outputs["uv_face_index"],
+                "uv_barycentric_vis": outputs["uv_barycentric_vis"],
+            }
+        else:
+            image_features = model.builder.encoder(batch["images"])
+            projection_debug = project_image_features_to_surface(
+                image_features=image_features,
+                mesh_vertices=batch["mesh_vertices"],
+                mesh_faces=batch["mesh_faces"],
+                intrinsics=batch["intrinsics"],
+                transform_matrices=batch["transform_matrices"],
+                template_mesh_path=batch.get("template_mesh_path", model.builder.template_mesh_path),
+                uv_resolution=args.uv_resolution,
+                uv_vertices=batch.get("uv_vertices"),
+                uv_faces=batch.get("uv_faces"),
+            )
 
     uv_valid_mask = outputs["uv_valid_mask"][0, 0].detach().cpu().numpy()
     uv_position_map = outputs["uv_position_map"][0].detach().cpu().numpy()
@@ -240,6 +272,36 @@ def main() -> None:
         fw_mean = fw.mean(axis=0)[0]
         fw_vis = fw_mean / max(float(fw_mean.max()), 1.0e-8)
         _save_gray_png(fw_vis, out_dir / "fusion_weights_mean.png")
+
+    uv_feature_single = projection_debug["uv_feature_single"][0].detach().cpu().numpy()
+    if uv_feature_single.shape[0] >= 3:
+        uv_feature_single_vis = _minmax_chw_to_hwc(uv_feature_single[:3])
+    else:
+        pad = np.zeros((3, uv_feature_single.shape[1], uv_feature_single.shape[2]), dtype=np.float32)
+        pad[: uv_feature_single.shape[0]] = uv_feature_single
+        uv_feature_single_vis = _minmax_chw_to_hwc(pad)
+    _save_rgb_png(uv_feature_single_vis, out_dir / "uv_feature_single.png")
+
+    uv_feature_single_vflip = projection_debug["uv_feature_single_vflip"][0].detach().cpu().numpy()
+    if uv_feature_single_vflip.shape[0] >= 3:
+        uv_feature_single_vflip_vis = _minmax_chw_to_hwc(uv_feature_single_vflip[:3])
+    else:
+        pad = np.zeros((3, uv_feature_single_vflip.shape[1], uv_feature_single_vflip.shape[2]), dtype=np.float32)
+        pad[: uv_feature_single_vflip.shape[0]] = uv_feature_single_vflip
+        uv_feature_single_vflip_vis = _minmax_chw_to_hwc(pad)
+    _save_rgb_png(uv_feature_single_vflip_vis, out_dir / "uv_feature_single_vflip.png")
+
+    uv_visibility_single = projection_debug["uv_visibility_single"][0, 0].detach().cpu().numpy()
+    uv_visibility_single = uv_visibility_single / max(float(uv_visibility_single.max()), 1.0e-8)
+    _save_gray_png(uv_visibility_single, out_dir / "uv_visibility_single.png")
+
+    uv_face_index = projection_debug["uv_face_index"][0, 0].detach().cpu().numpy()
+    uv_face_index = uv_face_index - float(uv_face_index.min())
+    uv_face_index = uv_face_index / max(float(uv_face_index.max()), 1.0e-8)
+    _save_gray_png(uv_face_index, out_dir / "uv_face_index.png")
+
+    uv_barycentric_vis = projection_debug["uv_barycentric_vis"][0].detach().cpu().numpy()
+    _save_rgb_png(_minmax_chw_to_hwc(uv_barycentric_vis), out_dir / "uv_barycentric_vis.png")
 
     print("Saved Stage1 debug outputs to:", out_dir)
 
