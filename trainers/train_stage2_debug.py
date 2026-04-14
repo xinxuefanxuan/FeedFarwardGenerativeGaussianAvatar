@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
+import numpy as np
 import torch
+from PIL import Image
 
 from models.stage2_gaussian.stage2_pipeline import Stage2GaussianAvatar
 from trainers.stage2_trainer import Stage2Trainer
+
+
+def _save_rgb(x_chw: torch.Tensor, path: Path) -> None:
+    x = x_chw.detach().cpu().float().clamp(0.0, 1.0).numpy()
+    img = (np.transpose(x, (1, 2, 0)) * 255.0).astype(np.uint8)
+    Image.fromarray(img, mode="RGB").save(path)
+
+
+def _save_gray(x_hw: torch.Tensor, path: Path) -> None:
+    x = x_hw.detach().cpu().float().clamp(0.0, 1.0).numpy()
+    img = (x * 255.0).astype(np.uint8)
+    Image.fromarray(img, mode="L").save(path)
 
 
 def _make_dummy_batch(batch_size: int, num_views: int, huv: int, wuv: int, himg: int, wimg: int, cuv: int) -> dict:
@@ -49,6 +64,7 @@ def main() -> None:
     parser.add_argument("--image-size", type=int, default=128)
     parser.add_argument("--uv-feature-dim", type=int, default=32)
     parser.add_argument("--gaussian-color-dim", type=int, default=16)
+    parser.add_argument("--out-dir", type=str, default="outputs/stage2_debug")
     args = parser.parse_args()
 
     batch = _make_dummy_batch(
@@ -82,6 +98,32 @@ def main() -> None:
     print("loss_xyz_reg:", float(losses["loss_xyz_reg"].detach().cpu()))
     print("loss_scale_reg:", float(losses["loss_scale_reg"].detach().cpu()))
     print("loss_opacity_reg:", float(losses["loss_opacity_reg"].detach().cpu()))
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rendered = outputs["rendered_images"][0]      # [V,3,H,W]
+    alpha = outputs["rendered_alpha"][0]          # [V,1,H,W]
+    target = batch["target_images"][0]            # [V,3,H,W]
+    num_views = rendered.shape[0]
+
+    _save_rgb(rendered[0], out_dir / "rendered_view0.png")
+    _save_gray(alpha[0, 0], out_dir / "rendered_alpha_view0.png")
+    _save_rgb(target[0], out_dir / "target_view0.png")
+
+    if num_views > 1:
+        _save_rgb(rendered[1], out_dir / "rendered_view1.png")
+        _save_gray(alpha[1, 0], out_dir / "rendered_alpha_view1.png")
+        _save_rgb(target[1], out_dir / "target_view1.png")
+
+    # Optional quick side-by-side grid: [rendered0 | target0 | alpha0]
+    r0 = rendered[0].detach().cpu().float().clamp(0.0, 1.0).numpy()
+    t0 = target[0].detach().cpu().float().clamp(0.0, 1.0).numpy()
+    a0 = alpha[0, 0].detach().cpu().float().clamp(0.0, 1.0).numpy()
+    a0_rgb = np.stack([a0, a0, a0], axis=0)
+    grid = np.concatenate([r0, t0, a0_rgb], axis=2)  # CHW, concat width
+    _save_rgb(torch.from_numpy(grid), out_dir / "rendered_vs_target_grid.png")
+    print(f"Saved debug images to: {out_dir}")
 
 
 if __name__ == "__main__":
