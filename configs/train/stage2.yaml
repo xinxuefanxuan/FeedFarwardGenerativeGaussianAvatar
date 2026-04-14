@@ -1,0 +1,10 @@
+train:
+  stage2:
+    max_epochs: 10
+    lr: 1.0e-4
+    weight_decay: 1.0e-4
+    log_every_n_steps: 10
+    losses:
+      # TODO: 待确认渲染与先验损失权重。
+      render_recon: 1.0
+      regularization: 0.0
