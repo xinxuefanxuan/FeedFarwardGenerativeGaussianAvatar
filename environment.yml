@@ -1,0 +1,26 @@
+name: ff-gga
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch>=2.2
+  - torchvision>=0.17
+  - pytorch-cuda=12.1
+  - numpy>=1.24
+  - pyyaml>=6.0
+  - tqdm>=4.66
+  - opencv>=4.9
+  - pillow>=10.0
+  - scipy>=1.11
+  - matplotlib>=3.8
+  - scikit-image>=0.22
+  - pip
+  - pip:
+      - einops>=0.7
+      - lpips>=0.1.4
+      # Install backend libraries manually based on CUDA compatibility:
+      # - gsplat
+      # - nvdiffrast
+      # - pytorch3d
