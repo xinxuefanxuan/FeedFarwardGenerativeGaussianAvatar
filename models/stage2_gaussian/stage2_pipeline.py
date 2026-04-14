@@ -1,4 +1,4 @@
-"""Stage 2 feedforward Gaussian avatar pipeline skeleton."""
+"""Stage 2 feedforward Gaussian avatar MVP pipeline."""
 
 from __future__ import annotations
 
@@ -7,23 +7,34 @@ from typing import Dict
 import torch
 from torch import nn
 
-from models.render.gaussian_renderer import GaussianRenderer
-from models.stage2_gaussian.anchor_init import initialize_gaussian_anchors
-from models.stage2_gaussian.gaussian_decoder import GaussianAttributeDecoder
+from models.stage2_gaussian.render_bridge import Stage2RenderBridge
+from models.stage2_gaussian.stage2_input_adapter import Stage2InputBatch, stage2_batch_from_dict
+from models.stage2_gaussian.uv_gaussian_decoder import UVGaussianDecoder
 
 
 class Stage2GaussianAvatar(nn.Module):
-    """Generate Gaussian avatar from canonical representations."""
+    """Generate and render Gaussian avatar from canonical prior maps."""
 
-    def __init__(self, num_anchors: int = 20000, in_dim: int = 32) -> None:
+    def __init__(self, uv_feature_dim: int = 32, color_dim: int = 16) -> None:
         super().__init__()
-        self.num_anchors = num_anchors
-        self.decoder = GaussianAttributeDecoder(in_dim=in_dim)
-        self.renderer = GaussianRenderer()
+        self.decoder = UVGaussianDecoder(uv_feature_dim=uv_feature_dim, color_dim=color_dim)
+        self.render_bridge = Stage2RenderBridge()
 
-    def forward(self, stage1_outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        uv = stage1_outputs["canonical_uv"]
-        anchors = initialize_gaussian_anchors(uv, num_anchors=self.num_anchors)
-        gaussian_attrs = self.decoder(anchors)
-        render = self.renderer(gaussian_attrs)
-        return {"gaussians": gaussian_attrs, "render": render}
+    def forward(self, batch_or_dict: Dict[str, torch.Tensor] | Stage2InputBatch) -> Dict[str, torch.Tensor]:
+        batch = stage2_batch_from_dict(batch_or_dict) if isinstance(batch_or_dict, dict) else batch_or_dict
+
+        gaussians = self.decoder(
+            uv_valid_mask=batch.uv_valid_mask,
+            uv_position_map=batch.uv_position_map,
+            uv_normal_map=batch.uv_normal_map,
+            uv_feature_map=batch.uv_feature_map,
+            uv_confidence_map=batch.uv_confidence_map,
+        )
+        _, _, _, h, w = batch.target_images.shape
+        render_out = self.render_bridge(
+            gaussians=gaussians,
+            intrinsics=batch.intrinsics,
+            extrinsics=batch.extrinsics,
+            image_size=(h, w),
+        )
+        return {**gaussians, **render_out}
