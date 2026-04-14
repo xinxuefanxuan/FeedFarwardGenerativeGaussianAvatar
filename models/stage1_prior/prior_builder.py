@@ -59,8 +59,12 @@ class Stage1PriorBuilder(nn.Module):
             visibility=uv_pack["visibility"],
             confidence=uv_pack["confidence"],
         )
-
-        refined_uv = self.uv_refinement(fusion_out["fused_uv_features"])
+        num_views = batch["images"].shape[1]
+        if num_views == 1:
+            # Keep single-view output definition consistent with weighted projection result.
+            refined_uv = fusion_out["fused_uv_features"]
+        else:
+            refined_uv = self.uv_refinement(fusion_out["fused_uv_features"])
         geom = build_geometry_maps(
             fused_uv_features=refined_uv,
             fused_confidence=fusion_out["fused_confidence"],
